@@ -1,4 +1,7 @@
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { loadProjectConfig } from './config/index.js';
 import { 
@@ -6,8 +9,14 @@ import {
   actualizarEstadoAccion, 
   pendingActionsStore 
 } from './notifications/mailer.js';
+import { ejecutarModificacionTrello } from './integrations/trello.js';
+import { inicializarCronSemanal } from './workflows/cron.js';
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const LOG_FILE_PATH = path.resolve(__dirname, '../historial.log');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -42,6 +51,18 @@ app.get('/api/pending-actions', (req, res) => {
     actions,
   });
 });
+
+/**
+ * Helper para registrar eventos en el archivo local historial.log
+ */
+const registrarEnHistorial = (linea) => {
+  try {
+    const logEntry = `[${new Date().toISOString()}] ${linea}\n`;
+    fs.appendFileSync(LOG_FILE_PATH, logEntry, 'utf8');
+  } catch (error) {
+    console.error('[Historial] Error al escribir en historial.log:', error.message);
+  }
+};
 
 /**
  * Helper para renderizar páginas HTML responsivas de confirmación para el Gestor
@@ -138,7 +159,7 @@ const renderHtmlResponse = ({ title, statusType, headline, message, details, act
         ${details.cardName ? `<div class="details-item"><strong>Tarjeta:</strong> <span>${details.cardName}</span></div>` : ''}
         ${details.action ? `<div class="details-item"><strong>Acción:</strong> <span>${details.action}</span></div>` : ''}
         ${details.dueDate ? `<div class="details-item"><strong>Nueva Fecha Límite:</strong> <span>${details.dueDate}</span></div>` : ''}
-        <div class="details-item"><strong>Registrado en Sistema:</strong> <span>${new Date().toLocaleTimeString()}</span></div>
+        <div class="details-item"><strong>Registrado en Historial:</strong> <span>historial.log</span></div>
       </div>
       ` : ''}
 
@@ -180,7 +201,7 @@ app.get('/webhook/decision', async (req, res) => {
   // 2. Búsqueda de la acción en el almacén de acciones pendientes
   const action = obtenerAccionPendiente(actionId);
 
-  // Manejo de acción no encontrada o expirada (soporta modo simulado si el servidor se reinició)
+  // Manejo de acción no encontrada o expirada
   if (!action) {
     console.warn(`[Webhook Decision] ⚠️ Acción "${actionId}" no encontrada en memoria.`);
     return res.status(404).send(renderHtmlResponse({
@@ -216,7 +237,16 @@ app.get('/webhook/decision', async (req, res) => {
     // Actualizar estado en almacén
     actualizarEstadoAccion(actionId, 'APPROVED');
 
-    // Registro detallado en consola (Auditoría e Historial)
+    const params = action.trelloExecutionParams;
+
+    // Registro en historial.log
+    registrarEnHistorial(
+      `[DECISION: APROBADA] ActionId: ${action.actionId} | Codigo: ${action.itemCode} | ` +
+      `Proyecto: "${action.projectName}" | Tarjeta: "${action.cardName}" (${action.cardId}) | ` +
+      `Accion: "${action.recommendedAction}" | Params: ${JSON.stringify(params)}`
+    );
+
+    // Registro estructurado en consola (Auditoría)
     console.log('================================================================================');
     console.log(`[HUMAN-IN-THE-LOOP] ✅ DECISIÓN REGISTRADA: ACCIÓN APROBADA POR EL GESTOR`);
     console.log(`Timestamp: ${timestampISO}`);
@@ -225,29 +255,39 @@ app.get('/webhook/decision', async (req, res) => {
     console.log(`Tarjeta Trello: "${action.cardName}" (Card ID: ${action.cardId})`);
     console.log(`Problema Detectado: ${action.detectedProblem}`);
     console.log(`Acción Aprobada: ${action.recommendedAction}`);
-    console.log(`Justificación: ${action.technicalJustification}`);
-    console.log(`Parámetros Trello a Ejecutar:`, JSON.stringify(action.trelloExecutionParams, null, 2));
+    console.log(`Parámetros Trello a Ejecutar:`, JSON.stringify(params, null, 2));
     console.log(`--------------------------------------------------------------------------------`);
-    console.log(`[Trello Execution Simulator] 📡 Enviando PUT /1/cards/${action.trelloExecutionParams.idCard}...`);
-    console.log(`[Trello Execution Simulator] ✨ ¡Tarjeta en Trello actualizada exitosamente con los nuevos parámetros!`);
+
+    // Llamada a la API de Trello (Paso 2 y Paso 3):
+    // Descomentar para aplicar los cambios directamente en Trello:
+    // await ejecutarModificacionTrello(params);
+    console.log(`[Trello Execution] Simulación activa: llamada a ejecutarModificacionTrello(params) preparada.`);
+    console.log(`[Historial] Registro guardado en: ${LOG_FILE_PATH}`);
     console.log('================================================================================');
 
     return res.status(200).send(renderHtmlResponse({
       title: 'Modificación Aprobada',
       statusType: 'approved',
       headline: '¡Acción Aprobada con Éxito!',
-      message: 'El Gestor del Proyecto ha autorizado la modificación. Trello ha sido notificado y la planificación ha sido actualizada.',
+      message: 'El Gestor del Proyecto ha autorizado la modificación. El cambio quedó registrado en historial.log y preparado para Trello.',
       actionCode: action.itemCode,
       details: {
         cardName: action.cardName,
         action: action.recommendedAction,
-        dueDate: action.trelloExecutionParams?.due ? new Date(action.trelloExecutionParams.due).toLocaleString() : 'Sin cambio de fecha',
+        dueDate: params?.due ? new Date(params.due).toLocaleString() : 'Sin cambio de fecha',
       },
     }));
 
   } else {
     // Decisión: Rechazar
     actualizarEstadoAccion(actionId, 'REJECTED');
+
+    // Registro en historial.log
+    registrarEnHistorial(
+      `[DECISION: RECHAZADA] ActionId: ${action.actionId} | Codigo: ${action.itemCode} | ` +
+      `Proyecto: "${action.projectName}" | Tarjeta: "${action.cardName}" (${action.cardId}) | ` +
+      `Desestimada por el PM.`
+    );
 
     console.log('================================================================================');
     console.log(`[HUMAN-IN-THE-LOOP] ❌ DECISIÓN REGISTRADA: ACCIÓN RECHAZADA POR EL GESTOR`);
@@ -257,6 +297,7 @@ app.get('/webhook/decision', async (req, res) => {
     console.log(`Tarjeta Trello: "${action.cardName}" (Card ID: ${action.cardId})`);
     console.log(`Acción Desestimada: ${action.recommendedAction}`);
     console.log(`Resultado: La tarjeta permanecerá sin cambios en Trello por orden del Gestor.`);
+    console.log(`[Historial] Registro guardado en: ${LOG_FILE_PATH}`);
     console.log('================================================================================');
 
     return res.status(200).send(renderHtmlResponse({
@@ -323,6 +364,9 @@ if (process.env.NODE_ENV !== 'test') {
     console.log(`[Server] Smart Project Agent running on port ${PORT}`);
     console.log(`[Server] Webhook repo endpoint: POST http://localhost:${PORT}/webhook/repo-update`);
     console.log(`[Server] Decision HITL endpoint: GET http://localhost:${PORT}/webhook/decision`);
+    
+    // Paso 5: Inicialización del Cronjob Semanal
+    inicializarCronSemanal('0 17 * * 5');
   });
 }
 

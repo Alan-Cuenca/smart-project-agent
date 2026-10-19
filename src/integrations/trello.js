@@ -263,6 +263,67 @@ export class TrelloIntegration {
   }
 
   /**
+   * Modifies an existing Trello card based on validated parameters (e.g., due date, moving list).
+   * Protected with try/catch so API issues do not crash the server.
+   * 
+   * @param {Object} trelloExecutionParams - Validated parameters from Agente Aprobador.
+   * @param {string} [trelloExecutionParams.idCard] - ID of the target card.
+   * @param {string} [trelloExecutionParams.cardId] - Alternative ID of target card.
+   * @param {string|null} [trelloExecutionParams.due] - New due date in ISO format.
+   * @param {string|null} [trelloExecutionParams.idList] - Destination list ID to move the card.
+   * @param {Array<string>|string} [trelloExecutionParams.idMembers] - Member IDs assigned to the card.
+   * @returns {Promise<Object>} Execution result { success: boolean, data?: Object, error?: string }
+   */
+  async updateCard(trelloExecutionParams = {}) {
+    const cardId = trelloExecutionParams.idCard || trelloExecutionParams.cardId;
+
+    if (!cardId) {
+      console.error('[TrelloIntegration.updateCard] ⚠️ Parámetro idCard faltante en los parámetros de ejecución.');
+      return {
+        success: false,
+        error: 'El parámetro idCard es obligatorio para ejecutar la modificación en Trello.',
+      };
+    }
+
+    try {
+      this.validateCredentials();
+
+      const queryParams = {};
+      if (trelloExecutionParams.due !== undefined) queryParams.due = trelloExecutionParams.due;
+      if (trelloExecutionParams.idList) queryParams.idList = trelloExecutionParams.idList;
+      if (trelloExecutionParams.idMembers) {
+        queryParams.idMembers = Array.isArray(trelloExecutionParams.idMembers)
+          ? trelloExecutionParams.idMembers.join(',')
+          : trelloExecutionParams.idMembers;
+      }
+      if (trelloExecutionParams.name) queryParams.name = trelloExecutionParams.name;
+      if (trelloExecutionParams.desc) queryParams.desc = trelloExecutionParams.desc;
+
+      console.log(`[TrelloIntegration] 📡 Ejecutando modificación para tarjeta "${cardId}"...`, queryParams);
+
+      const response = await this.client.put(`/cards/${cardId}`, null, {
+        params: queryParams,
+      });
+
+      console.log(`[TrelloIntegration] ✅ Tarjeta "${cardId}" modificada exitosamente en Trello.`);
+      return {
+        success: true,
+        data: response.data,
+      };
+    } catch (error) {
+      const errorDetails = error.response?.data || error.message;
+      console.error(
+        `[TrelloIntegration.updateCard] ⚠️ Error al modificar la tarjeta "${cardId}" en Trello (Status: ${error.response?.status || 'N/A'}):`,
+        errorDetails
+      );
+      return {
+        success: false,
+        error: typeof errorDetails === 'string' ? errorDetails : JSON.stringify(errorDetails),
+      };
+    }
+  }
+
+  /**
    * Internal error handler formatting API issues consistently.
    * @private
    */
@@ -301,6 +362,16 @@ export const trelloIntegration = new TrelloIntegration();
  */
 export const fetchTrelloBoardSnapshot = async (boardId) => {
   return trelloIntegration.getStructuredBoardData(boardId);
+};
+
+/**
+ * Convenience export to apply approved card modifications in Trello.
+ * 
+ * @param {Object} trelloExecutionParams - Validated parameters ({ idCard, due, idList, ... }).
+ * @returns {Promise<Object>} Result object { success: boolean, data?: Object, error?: string }.
+ */
+export const ejecutarModificacionTrello = async (trelloExecutionParams) => {
+  return trelloIntegration.updateCard(trelloExecutionParams);
 };
 
 export default trelloIntegration;
