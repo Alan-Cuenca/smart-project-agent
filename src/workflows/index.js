@@ -3,7 +3,7 @@ import { analizarPlanificacion } from '../agents/ejecutor.js';
 import { revisarPropuesta } from '../agents/revisor.js';
 import { evaluarAprobacion } from '../agents/aprobador.js';
 import { loadProjectConfig } from '../config/index.js';
-import { sendProjectAlert } from '../notifications/mailer.js';
+import { sendProjectAlert, enviarSolicitudAprobacion } from '../notifications/mailer.js';
 
 /**
  * Registra un mensaje formateado con marca de tiempo ISO en consola.
@@ -95,15 +95,10 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     let notificacionResultado = null;
     if (opciones.notificarPM) {
-      logEtapa('NOTIFICACION', `Enviando dictamen por correo al Gestor (${config.projectManagerEmail})...`);
+      logEtapa('NOTIFICACION', `Enviando solicitud de aprobación interactiva al Gestor (${config.projectManagerEmail})...`);
       try {
-        notificacionResultado = await sendProjectAlert({
-          projectConfig: config,
-          subject: dictamenAprobador.emailSubject,
-          text: dictamenAprobador.emailBodyMarkdown,
-          html: `<pre style="font-family: sans-serif; white-space: pre-wrap;">${dictamenAprobador.emailBodyMarkdown}</pre>`,
-        });
-        logEtapa('NOTIFICACION', `Correo de notificación enviado exitosamente.`);
+        notificacionResultado = await enviarSolicitudAprobacion(dictamenAprobador, config);
+        logEtapa('NOTIFICACION', `Correo de aprobación interactivo enviado exitosamente (Acciones: ${notificacionResultado.registeredActionsCount}).`);
       } catch (mailError) {
         logEtapa('NOTIFICACION_WARN', `No se pudo enviar el correo: ${mailError.message}`);
       }

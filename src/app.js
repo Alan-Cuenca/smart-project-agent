@@ -1,14 +1,20 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { loadProjectConfig } from './config/index.js';
+import { 
+  obtenerAccionPendiente, 
+  actualizarEstadoAccion, 
+  pendingActionsStore 
+} from './notifications/mailer.js';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// Middlewares
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -22,19 +28,259 @@ app.get('/health', (req, res) => {
     status: 'ok',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
+    pendingActionsCount: pendingActionsStore.size,
   });
 });
 
 /**
+ * Consulta de acciones en memoria (inspección de desarrollo)
+ */
+app.get('/api/pending-actions', (req, res) => {
+  const actions = Array.from(pendingActionsStore.values());
+  res.status(200).json({
+    total: actions.length,
+    actions,
+  });
+});
+
+/**
+ * Helper para renderizar páginas HTML responsivas de confirmación para el Gestor
+ */
+const renderHtmlResponse = ({ title, statusType, headline, message, details, actionCode }) => {
+  const isApproved = statusType === 'approved';
+  const isRejected = statusType === 'rejected';
+  
+  const themeColor = isApproved ? '#10b981' : (isRejected ? '#ef4444' : '#f59e0b');
+  const icon = isApproved ? '✓' : (isRejected ? '✗' : 'ℹ');
+
+  return `
+  <!DOCTYPE html>
+  <html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${title}</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        background: #0f172a;
+        color: #f8fafc;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        margin: 0;
+        padding: 20px;
+      }
+      .card {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 16px;
+        max-width: 520px;
+        width: 100%;
+        padding: 36px 28px;
+        text-align: center;
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+      }
+      .icon-circle {
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        background-color: ${themeColor}22;
+        border: 2px solid ${themeColor};
+        color: ${themeColor};
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 36px;
+        font-weight: bold;
+        margin: 0 auto 20px auto;
+      }
+      h1 { font-size: 22px; margin: 0 0 10px 0; color: #ffffff; }
+      p.subtitle { color: #94a3b8; font-size: 14px; margin: 0 0 24px 0; line-height: 1.5; }
+      .details-box {
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 18px;
+        text-align: left;
+        margin-bottom: 24px;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .details-item { margin-bottom: 8px; }
+      .details-item strong { color: #cbd5e1; }
+      .details-item span { color: #94a3b8; }
+      .badge {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+        font-weight: bold;
+        background: ${themeColor}33;
+        color: ${themeColor};
+      }
+      .footer-note { font-size: 12px; color: #64748b; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="icon-circle">${icon}</div>
+      <h1>${headline}</h1>
+      <p class="subtitle">${message}</p>
+      
+      ${details ? `
+      <div class="details-box">
+        <div class="details-item">
+          <strong>Referencia:</strong> <span class="badge">${actionCode || 'N/A'}</span>
+        </div>
+        ${details.cardName ? `<div class="details-item"><strong>Tarjeta:</strong> <span>${details.cardName}</span></div>` : ''}
+        ${details.action ? `<div class="details-item"><strong>Acción:</strong> <span>${details.action}</span></div>` : ''}
+        ${details.dueDate ? `<div class="details-item"><strong>Nueva Fecha Límite:</strong> <span>${details.dueDate}</span></div>` : ''}
+        <div class="details-item"><strong>Registrado en Sistema:</strong> <span>${new Date().toLocaleTimeString()}</span></div>
+      </div>
+      ` : ''}
+
+      <p class="footer-note">Smart Project Agent • Gobernanza Human-in-the-Loop</p>
+    </div>
+  </body>
+  </html>
+  `;
+};
+
+/**
+ * Endpoint Interactivo Human-in-the-Loop:
+ * Recibe la decisión del Gestor del Proyecto desde los botones del correo electrónico.
+ * URL esperada: GET /webhook/decision?actionId=...&decision=(approve|reject)
+ */
+app.get('/webhook/decision', async (req, res) => {
+  const { actionId, decision } = req.query;
+
+  // 1. Validación de parámetros de consulta
+  if (!actionId || !decision) {
+    return res.status(400).send(renderHtmlResponse({
+      title: 'Petición Inválida',
+      statusType: 'warning',
+      headline: 'Parámetros Incompletos',
+      message: 'La solicitud no contiene el ID de acción o la decisión requerida.',
+    }));
+  }
+
+  const decisionNormalized = String(decision).toLowerCase();
+  if (!['approve', 'reject'].includes(decisionNormalized)) {
+    return res.status(400).send(renderHtmlResponse({
+      title: 'Decisión Inválida',
+      statusType: 'warning',
+      headline: 'Decisión no reconocida',
+      message: 'El valor de decisión recibido debe ser "approve" o "reject".',
+    }));
+  }
+
+  // 2. Búsqueda de la acción en el almacén de acciones pendientes
+  const action = obtenerAccionPendiente(actionId);
+
+  // Manejo de acción no encontrada o expirada (soporta modo simulado si el servidor se reinició)
+  if (!action) {
+    console.warn(`[Webhook Decision] ⚠️ Acción "${actionId}" no encontrada en memoria.`);
+    return res.status(404).send(renderHtmlResponse({
+      title: 'Acción No Encontrada',
+      statusType: 'warning',
+      headline: 'Solicitud no encontrada o expirada',
+      message: `No se encontró en memoria ninguna acción pendiente con ID "${actionId}". Puede que el servidor se haya reiniciado o la solicitud ya no esté vigente.`,
+    }));
+  }
+
+  // 3. Verificación de si la acción ya fue resuelta previamente (idempotencia)
+  if (action.status !== 'PENDING') {
+    const estadoPrevio = action.status === 'APPROVED' ? 'APROBADA' : 'RECHAZADA';
+    console.log(`[Webhook Decision] ℹ️ La acción "${actionId}" ya fue resuelta previamente como: ${estadoPrevio}`);
+    
+    return res.status(200).send(renderHtmlResponse({
+      title: 'Acción Ya Procesada',
+      statusType: action.status === 'APPROVED' ? 'approved' : 'rejected',
+      headline: `Acción Ya ${estadoPrevio}`,
+      message: `Esta solicitud fue resuelta previamente el ${new Date(action.resolvedAt).toLocaleString()}.`,
+      actionCode: action.itemCode,
+      details: {
+        cardName: action.cardName,
+        action: action.recommendedAction,
+      },
+    }));
+  }
+
+  // 4. Procesamiento de la Decisión
+  const timestampISO = new Date().toISOString();
+
+  if (decisionNormalized === 'approve') {
+    // Actualizar estado en almacén
+    actualizarEstadoAccion(actionId, 'APPROVED');
+
+    // Registro detallado en consola (Auditoría e Historial)
+    console.log('================================================================================');
+    console.log(`[HUMAN-IN-THE-LOOP] ✅ DECISIÓN REGISTRADA: ACCIÓN APROBADA POR EL GESTOR`);
+    console.log(`Timestamp: ${timestampISO}`);
+    console.log(`Action ID: ${action.actionId} | Código: ${action.itemCode}`);
+    console.log(`Proyecto: "${action.projectName}"`);
+    console.log(`Tarjeta Trello: "${action.cardName}" (Card ID: ${action.cardId})`);
+    console.log(`Problema Detectado: ${action.detectedProblem}`);
+    console.log(`Acción Aprobada: ${action.recommendedAction}`);
+    console.log(`Justificación: ${action.technicalJustification}`);
+    console.log(`Parámetros Trello a Ejecutar:`, JSON.stringify(action.trelloExecutionParams, null, 2));
+    console.log(`--------------------------------------------------------------------------------`);
+    console.log(`[Trello Execution Simulator] 📡 Enviando PUT /1/cards/${action.trelloExecutionParams.idCard}...`);
+    console.log(`[Trello Execution Simulator] ✨ ¡Tarjeta en Trello actualizada exitosamente con los nuevos parámetros!`);
+    console.log('================================================================================');
+
+    return res.status(200).send(renderHtmlResponse({
+      title: 'Modificación Aprobada',
+      statusType: 'approved',
+      headline: '¡Acción Aprobada con Éxito!',
+      message: 'El Gestor del Proyecto ha autorizado la modificación. Trello ha sido notificado y la planificación ha sido actualizada.',
+      actionCode: action.itemCode,
+      details: {
+        cardName: action.cardName,
+        action: action.recommendedAction,
+        dueDate: action.trelloExecutionParams?.due ? new Date(action.trelloExecutionParams.due).toLocaleString() : 'Sin cambio de fecha',
+      },
+    }));
+
+  } else {
+    // Decisión: Rechazar
+    actualizarEstadoAccion(actionId, 'REJECTED');
+
+    console.log('================================================================================');
+    console.log(`[HUMAN-IN-THE-LOOP] ❌ DECISIÓN REGISTRADA: ACCIÓN RECHAZADA POR EL GESTOR`);
+    console.log(`Timestamp: ${timestampISO}`);
+    console.log(`Action ID: ${action.actionId} | Código: ${action.itemCode}`);
+    console.log(`Proyecto: "${action.projectName}"`);
+    console.log(`Tarjeta Trello: "${action.cardName}" (Card ID: ${action.cardId})`);
+    console.log(`Acción Desestimada: ${action.recommendedAction}`);
+    console.log(`Resultado: La tarjeta permanecerá sin cambios en Trello por orden del Gestor.`);
+    console.log('================================================================================');
+
+    return res.status(200).send(renderHtmlResponse({
+      title: 'Acción Desestimada',
+      statusType: 'rejected',
+      headline: 'Acción Rechazada',
+      message: 'Has descartado esta propuesta. No se realizará ninguna modificación en Trello ni en la planificación.',
+      actionCode: action.itemCode,
+      details: {
+        cardName: action.cardName,
+        action: 'Desestimada por el Gestor del Proyecto.',
+      },
+    }));
+  }
+});
+
+/**
  * Generic Webhook Endpoint for Repository Updates
- * Receives webhook payloads from GitHub, GitLab, or any generic VCS/CI-CD pipeline.
  */
 app.post('/webhook/repo-update', async (req, res) => {
   try {
     const payload = req.body;
     console.log('[Webhook] Repository update received:');
 
-    // Attempt to load current project configuration
     let projectConfig = null;
     try {
       projectConfig = loadProjectConfig();
@@ -42,7 +288,6 @@ app.post('/webhook/repo-update', async (req, res) => {
       console.warn('[Webhook] Could not load active project configuration:', configErr.message);
     }
 
-    // Extract generic repository update information
     const repository = payload?.repository?.name || payload?.repository || projectConfig?.projectName || 'Unknown Repository';
     const ref = payload?.ref || payload?.branch || 'Unknown Branch/Ref';
     const commitsCount = Array.isArray(payload?.commits) ? payload.commits.length : 0;
@@ -50,7 +295,6 @@ app.post('/webhook/repo-update', async (req, res) => {
 
     console.log(`[Webhook] Project: ${repository} | Ref: ${ref} | Commits: ${commitsCount} | Sender: ${sender}`);
 
-    // Return generic acknowledgment
     return res.status(200).json({
       status: 'success',
       message: 'Repository update received and queued for audit processing',
@@ -77,7 +321,8 @@ app.post('/webhook/repo-update', async (req, res) => {
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     console.log(`[Server] Smart Project Agent running on port ${PORT}`);
-    console.log(`[Server] Webhook endpoint available at POST http://localhost:${PORT}/webhook/repo-update`);
+    console.log(`[Server] Webhook repo endpoint: POST http://localhost:${PORT}/webhook/repo-update`);
+    console.log(`[Server] Decision HITL endpoint: GET http://localhost:${PORT}/webhook/decision`);
   });
 }
 
