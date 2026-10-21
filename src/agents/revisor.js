@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { z } from 'zod';
-import { ChatOpenAI } from '@langchain/openai';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { loadProjectConfig } from '../config/index.js';
 
@@ -39,20 +39,23 @@ export const RevisionSchema = z.object({
 });
 
 /**
- * Instancia el modelo ChatOpenAI configurado con baja temperatura.
+ * Instancia el modelo ChatGoogleGenerativeAI configurado con baja temperatura (Gemini 1.5 Pro).
  * @param {Object} [customConfig={}]
- * @returns {ChatOpenAI}
+ * @returns {ChatGoogleGenerativeAI}
  */
 export const obtenerModeloRevisor = (customConfig = {}) => {
-  const apiKey = customConfig.apiKey || process.env.OPENAI_API_KEY;
+  const apiKey = customConfig.apiKey || process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
-    throw new Error('[AgenteRevisor] OPENAI_API_KEY no configurada en las variables de entorno.');
+    throw new Error('[AgenteRevisor] GEMINI_API_KEY no configurada en las variables de entorno.');
   }
 
-  return new ChatOpenAI({
-    openAIApiKey: apiKey,
-    modelName: customConfig.modelName || process.env.OPENAI_MODEL || 'gpt-4o',
+  const selectedModel = customConfig.model || customConfig.modelName || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+
+  return new ChatGoogleGenerativeAI({
+    apiKey: apiKey,
+    model: selectedModel,
+    modelName: selectedModel,
     temperature: 0.1, // Temperatura muy baja para máxima rigurosidad y detección de errores
     ...customConfig,
   });
@@ -135,7 +138,7 @@ Tu dictamen debe ser quirúrgico, objetivo e implacable contra las alucinaciones
       `Valida cada acción, corrige cualquier alucinación y genera el dictamen estructurado.`
     );
 
-    console.log(`[AgenteRevisor] Auditando calidad y consistencia para el proyecto "${projectName}"...`);
+    console.log(`[AgenteRevisor] Auditando calidad y consistencia con Gemini Pro para el proyecto "${projectName}"...`);
 
     const modelo = obtenerModeloRevisor();
     const modeloEstructurado = modelo.withStructuredOutput(RevisionSchema, {
@@ -151,7 +154,7 @@ Tu dictamen debe ser quirúrgico, objetivo e implacable contra las alucinaciones
     return resultado;
 
   } catch (error) {
-    console.error('[AgenteRevisor] Error al revisar la propuesta:', error.message);
+    console.error('[AgenteRevisor] Error al procesar la auditoría con Google Gemini:', error.message);
     throw new Error(`[AgenteRevisor Falló]: ${error.message}`);
   }
 }

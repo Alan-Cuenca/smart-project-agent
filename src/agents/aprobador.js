@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { z } from 'zod';
-import { ChatOpenAI } from '@langchain/openai';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { loadProjectConfig } from '../config/index.js';
 
@@ -54,20 +54,23 @@ export const AprobadorVerdictSchema = z.object({
 });
 
 /**
- * Instancia el modelo de Chat para el Agente Aprobador.
+ * Instancia el modelo ChatGoogleGenerativeAI para el Agente Aprobador (Gemini 1.5 Pro).
  * @param {Object} [customConfig={}]
- * @returns {ChatOpenAI}
+ * @returns {ChatGoogleGenerativeAI}
  */
 export const obtenerModeloAprobador = (customConfig = {}) => {
-  const apiKey = customConfig.apiKey || process.env.OPENAI_API_KEY;
+  const apiKey = customConfig.apiKey || process.env.GEMINI_API_KEY;
 
   if (!apiKey) {
-    throw new Error('[AgenteAprobador] OPENAI_API_KEY no configurada en las variables de entorno.');
+    throw new Error('[AgenteAprobador] GEMINI_API_KEY no configurada en las variables de entorno.');
   }
 
-  return new ChatOpenAI({
-    openAIApiKey: apiKey,
-    modelName: customConfig.modelName || process.env.OPENAI_MODEL || 'gpt-4o',
+  const selectedModel = customConfig.model || customConfig.modelName || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+
+  return new ChatGoogleGenerativeAI({
+    apiKey: apiKey,
+    model: selectedModel,
+    modelName: selectedModel,
     temperature: 0.1, // Baja temperatura para estricta gobernanza
     ...customConfig,
   });
@@ -145,7 +148,7 @@ Estás evaluando la auditoría técnica del proyecto: **"${projectName}"**.
       `Aplica estrictamente la regla de gobernanza (HITL) y genera el paquete de aprobación.`
     );
 
-    console.log(`[AgenteAprobador] Evaluando impacto y gobernanza para el proyecto "${projectName}"...`);
+    console.log(`[AgenteAprobador] Evaluando impacto y gobernanza con Gemini Pro para el proyecto "${projectName}"...`);
 
     const modelo = obtenerModeloAprobador();
     const modeloEstructurado = modelo.withStructuredOutput(AprobadorVerdictSchema, {
@@ -161,7 +164,7 @@ Estás evaluando la auditoría técnica del proyecto: **"${projectName}"**.
     return dictamen;
 
   } catch (error) {
-    console.error('[AgenteAprobador] Error al evaluar aprobación:', error.message);
+    console.error('[AgenteAprobador] Error al evaluar aprobación con Google Gemini:', error.message);
     throw new Error(`[AgenteAprobador Falló]: ${error.message}`);
   }
 }

@@ -4,12 +4,12 @@ Agente Inteligente de Seguimiento y Auditoría de Proyectos completamente genér
 
 ## 📌 Arquitectura del Sistema
 
-El sistema está diseñado para auditar cualquier proyecto de software mediante archivos de configuración desacoplados (`project.config.json`), recibiendo eventos en tiempo real mediante webhooks y procesándolos con agentes impulsados por IA (LangChain / OpenAI) para alertar al Project Manager según métricas, avances o anomalías.
+El sistema está diseñado para auditar cualquier proyecto de software mediante archivos de configuración desacoplados (`project.config.json`), recibiendo eventos en tiempo real mediante webhooks y procesándolos con agentes impulsados por IA (LangChain / Google Gemini) para alertar al Project Manager según métricas, avances o anomalías.
 
 ```
 smart-project-agent/
 ├── src/
-│   ├── agents/          # Agentes inteligentes (LangChain / OpenAI)
+│   ├── agents/          # Agentes inteligentes (LangChain / Google Gemini)
 │   ├── config/          # Cargador agnóstico de configuración de proyectos
 │   ├── integrations/    # Integraciones externas (GitHub, Trello, etc.)
 │   ├── notifications/   # Módulos de alerta (Nodemailer, etc.)
@@ -36,7 +36,7 @@ cp .env.example .env
 ```
 
 Variables disponibles:
-- `OPENAI_API_KEY`: API Key para los modelos de OpenAI.
+- `GEMINI_API_KEY`: API Key para los modelos de Google Gemini (capa gratuita de Google AI Studio).
 - `TRELLO_API_KEY` & `TRELLO_TOKEN`: Credenciales para auditar tableros en Trello.
 - `GITHUB_TOKEN`: Token para consultar repositorios y pull requests.
 - `SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`: Configuración de servidor de correo para alertas dinámicas.
