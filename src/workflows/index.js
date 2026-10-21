@@ -44,6 +44,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     // PASO A: INTEGRACIÓN TRELLO (Snapshot Ground Truth)
     // =========================================================================
+    console.log('📋 [Trello] Extrayendo datos y métricas del tablero...');
     logEtapa('PASO_A_TRELLO', 'Consultando snapshot del tablero de Trello...');
     const snapshotTrello = await fetchTrelloBoardSnapshot(opciones.boardId);
     
@@ -58,6 +59,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     // PASO B: AGENTE EJECUTOR (Detección y Propuesta Inicial)
     // =========================================================================
+    console.log('🤖 [Ejecutor] Analizando tareas...');
     logEtapa('PASO_B_EJECUTOR', 'Ejecutando Agente Ejecutor para detección matemática de desviaciones...');
     const salidaEjecutor = await analizarPlanificacion(snapshotTrello, config);
     
@@ -66,6 +68,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     // PASO C: AGENTE REVISOR (Filtro de Calidad y Anti-Alucinaciones)
     // =========================================================================
+    console.log('🕵️‍♂️ [Revisor] Validando...');
     logEtapa('PASO_C_REVISOR', 'Ejecutando Agente Revisor para contrastar contra Ground Truth...');
     const salidaRevisor = await revisarPropuesta(salidaEjecutor, snapshotTrello, config);
 
@@ -80,6 +83,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     // PASO D: AGENTE APROBADOR (Gobernanza HITL y Paquete de Autorización)
     // =========================================================================
+    console.log('✅ [Aprobador] Generando dictamen...');
     logEtapa('PASO_D_APROBADOR', 'Ejecutando Agente Aprobador para evaluación de impacto y gobernanza...');
     const dictamenAprobador = await evaluarAprobacion(salidaRevisor, snapshotTrello, config);
 
@@ -91,10 +95,11 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     );
 
     // =========================================================================
-    // PASO OPCIONAL: NOTIFICACIÓN DINÁMICA AL PM
+    // PASO OPCIONAL: NOTIFICACIÓN DINÁMICA AL PM (MAILER)
     // =========================================================================
     let notificacionResultado = null;
     if (opciones.notificarPM) {
+      console.log('📧 [Mailer] Despachando notificación de aprobación interactiva al Gestor...');
       logEtapa('NOTIFICACION', `Enviando solicitud de aprobación interactiva al Gestor (${config.projectManagerEmail})...`);
       try {
         notificacionResultado = await enviarSolicitudAprobacion(dictamenAprobador, config);
@@ -105,7 +110,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     }
 
     const finTimestamp = new Date().toISOString();
-    logEtapa('FIN_FLUJO', `Flujo de seguimiento completado exitosamente a las ${finTimestamp}.`);
+    logEtapa('FIN_FLUJO', `Flujo completado exitosamente a las ${finTimestamp}.`);
 
     return {
       success: true,
@@ -123,11 +128,28 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     };
 
   } catch (error) {
-    logEtapa('ERROR_FATAL', `Fallo durante el flujo de seguimiento: ${error.message}`);
+    logEtapa('ERROR_FATAL', `Fallo durante el flujo: ${error.message}`);
     throw error;
   }
 }
 
+/**
+ * Orquestador Principal para la Auditoría Manual Inmediata del Sistema Multiagente.
+ * Encapsula todo el flujo secuencial de extremo a extremo:
+ * Extraer datos de Trello -> Ejecutor -> Revisor -> Aprobador -> Mailer (Gestor del Proyecto)
+ * 
+ * @param {Object} [opciones={}]
+ * @returns {Promise<Object>} Paquete integral con las salidas de cada etapa y el dictamen final.
+ */
+export async function ejecutarAuditoriaManual(opciones = {}) {
+  console.log('\n🚀 [Auditoría Manual] Iniciando pipeline multiagente...');
+  return await ejecutarFlujoSeguimiento({
+    notificarPM: true,
+    ...opciones,
+  });
+}
+
 export default {
   ejecutarFlujoSeguimiento,
+  ejecutarAuditoriaManual,
 };

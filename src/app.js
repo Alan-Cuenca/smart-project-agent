@@ -11,6 +11,7 @@ import {
 } from './notifications/mailer.js';
 import { ejecutarModificacionTrello } from './integrations/trello.js';
 import { inicializarCronSemanal } from './workflows/cron.js';
+import { ejecutarAuditoriaManual } from './workflows/index.js';
 
 dotenv.config();
 
@@ -50,6 +51,31 @@ app.get('/api/pending-actions', (req, res) => {
     total: actions.length,
     actions,
   });
+});
+
+/**
+ * Endpoint de prueba para invocar manualmente la auditoría completa del agente
+ * GET /api/test-agent
+ */
+app.get('/api/test-agent', async (req, res) => {
+  try {
+    console.log('[API /api/test-agent] Solicitud recibida: Disparando auditoría manual del agente...');
+
+    // Ejecuta la auditoría en segundo plano para respuesta inmediata al cliente
+    ejecutarAuditoriaManual().catch((error) => {
+      console.error('[API /api/test-agent] 💥 Error durante la auditoría manual:', error.message || error);
+    });
+
+    return res.status(200).json({
+      mensaje: "Auditoría del Agente iniciada. Revisa la consola del servidor y tu correo electrónico."
+    });
+  } catch (error) {
+    console.error('[API /api/test-agent] ⚠️ Error al invocar la auditoría:', error.message || error);
+    return res.status(500).json({
+      error: "Error al iniciar la auditoría del agente.",
+      detalle: error.message
+    });
+  }
 });
 
 /**
@@ -362,6 +388,7 @@ app.post('/webhook/repo-update', async (req, res) => {
 if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     console.log(`[Server] Smart Project Agent running on port ${PORT}`);
+    console.log(`[Server] Test agent endpoint: GET http://localhost:${PORT}/api/test-agent`);
     console.log(`[Server] Webhook repo endpoint: POST http://localhost:${PORT}/webhook/repo-update`);
     console.log(`[Server] Decision HITL endpoint: GET http://localhost:${PORT}/webhook/decision`);
     

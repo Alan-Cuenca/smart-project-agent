@@ -63,7 +63,15 @@ Modo producción:
 npm start
 ```
 
+### 5. Prueba Manual del Agente (CLI)
+Para ejecutar la auditoría de forma manual e inmediata desde la consola sin esperar el cronjob:
+```bash
+npm run test:agent
+```
+
 ## 📡 Endpoints Disponibles
 
-- `GET /health`: Verificación del estado del servicio.
+- `GET /health`: Verificación del estado del servicio y métricas activas.
+- `GET /api/test-agent`: Dispara la auditoría manual del flujo multiagente y responde de inmediato al cliente mientras se procesa y despacha el correo al PM.
+- `GET /webhook/decision`: Endpoint interactivo Human-in-the-Loop para registrar aprobaciones y rechazos emitidos por el Gestor desde los botones del correo.
 - `POST /webhook/repo-update`: Endpoint receptor genérico de eventos de actualización de repositorios (commits, pushes, PRs).
