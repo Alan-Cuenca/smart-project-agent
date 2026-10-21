@@ -9,6 +9,7 @@ dotenv.config();
 /**
  * Esquema Zod de validación estricta para la salida del Agente Revisor.
  * Garantiza que las correcciones y verificaciones sean deterministas y libres de alucinaciones.
+ * Compatible con la especificación de tipos Protobuf de Google Gemini.
  */
 export const RevisionSchema = z.object({
   auditSummary: z.string().describe('Resumen ejecutivo de la auditoría de calidad realizada sobre la propuesta del Ejecutor.'),
@@ -27,10 +28,10 @@ export const RevisionSchema = z.object({
       actionType: z.enum(['REPROGRAMACION', 'REASIGNACION', 'CAMBIO_PRIORIDAD', 'DESGLOSE', 'SEGUIMIENTO']).describe(
         'Tipo de acción correctiva validada'
       ),
-      suggestedDueDate: z.string().nullable().describe('Fecha límite corregida/validada en formato ISO'),
-      suggestedAssignee: z.string().nullable().describe('Responsable sugerido verificado existente en el equipo'),
+      suggestedDueDate: z.string().optional().describe('Fecha límite corregida/validada en formato ISO'),
+      suggestedAssignee: z.string().optional().describe('Responsable sugerido verificado existente en el equipo'),
       technicalRationale: z.string().describe('Justificación técnica de la viabilidad de la acción'),
-      reviewCorrectionNotes: z.string().nullable().describe('Nota explicativa si la acción requirió corrección o si fue descartada'),
+      reviewCorrectionNotes: z.string().optional().describe('Nota explicativa si la acción requirió corrección o si fue descartada'),
     })
   ).describe('Acciones correctivas filtradas, contrastadas con los datos reales y técnicamente validadas.'),
   qualityVerdict: z.enum(['APROBADO_PARA_GESTION', 'REQUIERE_AJUSTES_MENORES', 'RECHAZADO']).describe(
@@ -39,7 +40,20 @@ export const RevisionSchema = z.object({
 });
 
 /**
- * Instancia el modelo ChatGoogleGenerativeAI configurado con baja temperatura (Gemini 1.5 Pro).
+ * Resuelve el nombre del modelo Gemini adecuado.
+ * @param {string} [customModel]
+ * @returns {string}
+ */
+const resolverModeloGemini = (customModel) => {
+  const rawModel = customModel || process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+  if (rawModel.includes('1.5') || rawModel.includes('2.5')) {
+    return 'gemini-3.8-flash';
+  }
+  return rawModel;
+};
+
+/**
+ * Instancia el modelo ChatGoogleGenerativeAI configurado con baja temperatura.
  * @param {Object} [customConfig={}]
  * @returns {ChatGoogleGenerativeAI}
  */
@@ -50,7 +64,7 @@ export const obtenerModeloRevisor = (customConfig = {}) => {
     throw new Error('[AgenteRevisor] GEMINI_API_KEY no configurada en las variables de entorno.');
   }
 
-  const selectedModel = customConfig.model || customConfig.modelName || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+  const selectedModel = resolverModeloGemini(customConfig.model || customConfig.modelName);
 
   return new ChatGoogleGenerativeAI({
     apiKey: apiKey,
@@ -138,9 +152,9 @@ Tu dictamen debe ser quirúrgico, objetivo e implacable contra las alucinaciones
       `Valida cada acción, corrige cualquier alucinación y genera el dictamen estructurado.`
     );
 
-    console.log(`[AgenteRevisor] Auditando calidad y consistencia con Gemini Pro para el proyecto "${projectName}"...`);
-
     const modelo = obtenerModeloRevisor();
+    console.log(`[AgenteRevisor] Auditando calidad y consistencia con Gemini (${modelo.model}) para el proyecto "${projectName}"...`);
+
     const modeloEstructurado = modelo.withStructuredOutput(RevisionSchema, {
       name: 'AuditoriaCalidadRevisor',
     });
@@ -148,7 +162,7 @@ Tu dictamen debe ser quirúrgico, objetivo e implacable contra las alucinaciones
     const resultado = await modeloEstructurado.invoke([systemMessage, humanMessage]);
 
     console.log(
-      `[AgenteRevisor] Auditoría completada. Veredicto: ${resultado.qualityVerdict} | Coherencia: ${resultado.consistencyScore}/100 | Acciones validadas: ${resultado.verifiedActions.length}`
+      `[AgenteRevisor] Auditoría completada. Veredicto: ${resultado.qualityVerdict} | Coherencia: ${resultado.consistencyScore}/100 | Acciones validadas: ${resultado.verifiedActions?.length || 0}`
     );
 
     return resultado;

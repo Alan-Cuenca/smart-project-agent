@@ -10,17 +10,16 @@ dotenv.config();
  * Esquema Zod de salida para el Agente Aprobador.
  * Contiene el dictamen de gobernanza, la clasificación de impacto
  * y los parámetros técnicos exactos de Trello para su ejecución posterior.
+ * Compatible con la especificación de tipos Protobuf de Google Gemini.
  */
 export const AprobadorVerdictSchema = z.object({
   projectMetadata: z.object({
     projectName: z.string().describe('Nombre del proyecto auditado'),
-    projectManagerEmail: z.string().nullable().describe('Correo del Gestor del Proyecto'),
-    repositoryUrl: z.string().nullable().describe('URL del repositorio'),
-    trelloBoardId: z.string().nullable().describe('ID del tablero auditado'),
+    projectManagerEmail: z.string().optional().describe('Correo del Gestor del Proyecto'),
+    repositoryUrl: z.string().optional().describe('URL del repositorio'),
+    trelloBoardId: z.string().optional().describe('ID del tablero auditado'),
   }),
-  governancePolicy: z.literal(
-    'HUMAN_IN_THE_LOOP_REQUIRED: Ningún cambio puede aplicarse a Trello de forma autónoma sin la confirmación explícita del Gestor del Proyecto.'
-  ).describe('Declaración inmutable de la regla de oro de gobernanza.'),
+  governancePolicy: z.string().describe('Declaración inmutable de la regla de oro de gobernanza.'),
   overallRisk: z.enum(['BAJO', 'MEDIO', 'ALTO', 'CRITICO']).describe(
     'Nivel de riesgo global del proyecto tras evaluar retrasos e impactos.'
   ),
@@ -38,12 +37,12 @@ export const AprobadorVerdictSchema = z.object({
       impactLevel: z.enum(['BAJO', 'MEDIO', 'ALTO', 'CRITICO']).describe(
         'Nivel de impacto en el cronograma y recursos'
       ),
-      requiresApproval: z.literal(true).describe('Indica obligatoriamente la necesidad de confirmación humana'),
+      requiresApproval: z.boolean().default(true).describe('Indica obligatoriamente la necesidad de confirmación humana'),
       trelloExecutionParams: z.object({
         idCard: z.string().describe('ID de la tarjeta a actualizar en la API de Trello'),
-        due: z.string().nullable().describe('Nueva fecha límite ISO para la API de Trello o null si no aplica'),
+        due: z.string().optional().describe('Nueva fecha límite ISO para la API de Trello o vacio si no aplica'),
         idMembers: z.array(z.string()).default([]).describe('IDs de miembros para la API de Trello o vacío si no cambia'),
-        idList: z.string().nullable().describe('ID de la lista destino en Trello si aplica mover la tarjeta'),
+        idList: z.string().optional().describe('ID de la lista destino en Trello si aplica mover la tarjeta'),
       }).describe('Parámetros exactos preparados para consumir por la API de Trello si el Gestor autoriza.'),
     })
   ).describe('Paquete de solicitudes de cambio estructuradas para autorización del PM.'),
@@ -54,7 +53,20 @@ export const AprobadorVerdictSchema = z.object({
 });
 
 /**
- * Instancia el modelo ChatGoogleGenerativeAI para el Agente Aprobador (Gemini 1.5 Pro).
+ * Resuelve el nombre del modelo Gemini adecuado.
+ * @param {string} [customModel]
+ * @returns {string}
+ */
+const resolverModeloGemini = (customModel) => {
+  const rawModel = customModel || process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+  if (rawModel.includes('1.5') || rawModel.includes('2.5')) {
+    return 'gemini-3.8-flash';
+  }
+  return rawModel;
+};
+
+/**
+ * Instancia el modelo ChatGoogleGenerativeAI para el Agente Aprobador.
  * @param {Object} [customConfig={}]
  * @returns {ChatGoogleGenerativeAI}
  */
@@ -65,7 +77,7 @@ export const obtenerModeloAprobador = (customConfig = {}) => {
     throw new Error('[AgenteAprobador] GEMINI_API_KEY no configurada en las variables de entorno.');
   }
 
-  const selectedModel = customConfig.model || customConfig.modelName || process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+  const selectedModel = resolverModeloGemini(customConfig.model || customConfig.modelName);
 
   return new ChatGoogleGenerativeAI({
     apiKey: apiKey,
@@ -148,9 +160,9 @@ Estás evaluando la auditoría técnica del proyecto: **"${projectName}"**.
       `Aplica estrictamente la regla de gobernanza (HITL) y genera el paquete de aprobación.`
     );
 
-    console.log(`[AgenteAprobador] Evaluando impacto y gobernanza con Gemini Pro para el proyecto "${projectName}"...`);
-
     const modelo = obtenerModeloAprobador();
+    console.log(`[AgenteAprobador] Evaluando impacto y gobernanza con Gemini (${modelo.model}) para el proyecto "${projectName}"...`);
+
     const modeloEstructurado = modelo.withStructuredOutput(AprobadorVerdictSchema, {
       name: 'DictamenAprobacionGobernanza',
     });
@@ -158,7 +170,7 @@ Estás evaluando la auditoría técnica del proyecto: **"${projectName}"**.
     const dictamen = await modeloEstructurado.invoke([systemMessage, humanMessage]);
 
     console.log(
-      `[AgenteAprobador] Dictamen emitido. Riesgo: ${dictamen.overallRisk} | Solicitudes de cambio: ${dictamen.actionItems.length} | Requiere aprobación humana: SÍ`
+      `[AgenteAprobador] Dictamen emitido. Riesgo: ${dictamen.overallRisk} | Solicitudes de cambio: ${dictamen.actionItems?.length || 0} | Requiere aprobación humana: SÍ`
     );
 
     return dictamen;

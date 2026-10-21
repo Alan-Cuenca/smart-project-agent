@@ -6,6 +6,20 @@ import { loadProjectConfig } from '../config/index.js';
 dotenv.config();
 
 /**
+ * Resuelve el nombre del modelo Gemini adecuado.
+ * Mapea identificadores obsoletos (1.5 / 2.5) a gemini-3.8-flash si es necesario.
+ * @param {string} [customModel]
+ * @returns {string}
+ */
+const resolverModeloGemini = (customModel) => {
+  const rawModel = customModel || process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+  if (rawModel.includes('1.5') || rawModel.includes('2.5')) {
+    return 'gemini-3.8-flash';
+  }
+  return rawModel;
+};
+
+/**
  * Instancia y configura el modelo ChatGoogleGenerativeAI con temperatura baja
  * para garantizar análisis matemáticos, analíticos y deterministas.
  * 
@@ -21,7 +35,7 @@ export const obtenerModeloGemini = (customConfig = {}) => {
     );
   }
 
-  const selectedModel = customConfig.model || customConfig.modelName || process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+  const selectedModel = resolverModeloGemini(customConfig.model || customConfig.modelName);
 
   return new ChatGoogleGenerativeAI({
     apiKey: apiKey,
@@ -63,7 +77,7 @@ export async function analizarPlanificacion(datosTrello, configProyecto = null) 
     const projectName = config?.projectName || 'Proyecto Genérico';
     const fechaActual = new Date().toISOString();
 
-    // 1. Instanciación del Modelo con temperatura 0.2 (Google Gemini Flash)
+    // 1. Instanciación del Modelo con temperatura 0.2
     const modelo = obtenerModeloGemini();
 
     // 2. Prompt Engineering: Definición del SystemMessage parametrizado
@@ -84,7 +98,7 @@ export async function analizarPlanificacion(datosTrello, configProyecto = null) 
 
     const humanMessage = new HumanMessage(contenidoUsuario);
 
-    console.log(`[AgenteEjecutor] Analizando planificación con Gemini Flash para el proyecto: "${projectName}"...`);
+    console.log(`[AgenteEjecutor] Analizando planificación con Gemini (${modelo.model}) para el proyecto: "${projectName}"...`);
 
     // 4. Llamada a la IA y retorno de la propuesta textual
     const respuesta = await modelo.invoke([systemMessage, humanMessage]);
