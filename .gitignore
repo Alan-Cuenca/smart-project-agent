@@ -1,5 +1,27 @@
+# Dependencies
 node_modules/
+
+# Environment files
 .env
+.env.*
+!.env.example
+
+# Local project configuration (instance specific)
+project.config.json
+
+# Logs
 *.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# System and OS files
 .DS_Store
 Thumbs.db
+
+# IDE and Editor files
+.vscode/
+.idea/
+
