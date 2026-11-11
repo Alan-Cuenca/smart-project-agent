@@ -6,6 +6,9 @@ dotenv.config();
 
 const TRELLO_API_BASE_URL = 'https://api.trello.com/1';
 
+const MAX_COMENTARIO = 2000;
+const PREFIJO_COMENTARIO = '🤖 **Smart Project Agent** (aprobado por el Gestor del Proyecto):\n\n';
+
 const esTextoNoVacio = (valor) => typeof valor === 'string' && valor.trim() !== '';
 
 /**
@@ -13,8 +16,9 @@ const esTextoNoVacio = (valor) => typeof valor === 'string' && valor.trim() !== 
  * Descarta valores vacíos para que un campo "sin cambio" nunca borre datos existentes
  * (p. ej. due: "" eliminaría la fecha límite e idMembers: [] quitaría a todos los responsables).
  *
- * @param {Object} params - Parámetros crudos ({ idCard, due, idList, idMembers, name, desc }).
- * @returns {{ cardId: string|null, queryParams: Object }}
+ * @param {Object} params - Parámetros crudos ({ idCard, due, idList, idMembers, name, desc, comment }).
+ * @returns {{ cardId: string|null, queryParams: Object, comment: string|null }}
+ *   queryParams: campos de la tarjeta a modificar (PUT); comment: texto a publicar como comentario.
  */
 export const sanitizarParametrosTrello = (params = {}) => {
   const cardId = [params.idCard, params.cardId].find(esTextoNoVacio)?.trim() || null;
@@ -35,8 +39,13 @@ export const sanitizarParametrosTrello = (params = {}) => {
   if (esTextoNoVacio(params.name)) queryParams.name = params.name.trim();
   if (esTextoNoVacio(params.desc)) queryParams.desc = params.desc;
 
-  return { cardId, queryParams };
+  const comment = esTextoNoVacio(params.comment) ? params.comment.trim().slice(0, MAX_COMENTARIO) : null;
+
+  return { cardId, queryParams, comment };
 };
+
+/** Indica si los parámetros saneados contienen algún cambio aplicable. */
+export const tieneCambios = ({ queryParams, comment }) => Object.keys(queryParams).length > 0 || Boolean(comment);
 
 /**
  * Class representing the Trello Integration Service.
@@ -127,7 +136,7 @@ export class TrelloIntegration {
           lists: 'open',
           list_fields: 'name,closed,pos',
           cards: 'open',
-          card_fields: 'name,desc,due,dueComplete,idList,idMembers,labels,shortUrl,closed,dateLastActivity',
+          card_fields: 'name,desc,start,due,dueComplete,idList,idMembers,labels,shortUrl,closed,dateLastActivity',
           members: 'all',
           member_fields: 'fullName,username,avatarUrl',
         },
@@ -215,6 +224,7 @@ export class TrelloIntegration {
             name: listName,
           },
           status,
+          startDate: card.start || null,
           dueDate: card.due || null,
           dueComplete: isComplete,
           isOverdue,
@@ -324,7 +334,8 @@ export class TrelloIntegration {
    * @returns {Promise<Object>} Execution result { success: boolean, data?: Object, error?: string }
    */
   async updateCard(trelloExecutionParams = {}) {
-    const { cardId, queryParams } = sanitizarParametrosTrello(trelloExecutionParams);
+    const saneados = sanitizarParametrosTrello(trelloExecutionParams);
+    const { cardId, queryParams, comment } = saneados;
 
     if (!cardId) {
       console.error('[TrelloIntegration.updateCard] ⚠️ Parámetro idCard faltante en los parámetros de ejecución.');
@@ -334,32 +345,41 @@ export class TrelloIntegration {
       };
     }
 
-    if (Object.keys(queryParams).length === 0) {
+    if (!tieneCambios(saneados)) {
       console.warn(`[TrelloIntegration.updateCard] ℹ️ La acción para "${cardId}" no contiene cambios aplicables. No se llamó a Trello.`);
       return {
         success: false,
-        error: 'La acción no contiene ningún cambio válido para aplicar en Trello (fecha, lista o responsables).',
+        error: 'La acción no contiene ningún cambio válido para aplicar en Trello (fecha, lista, responsables o comentario).',
       };
     }
 
     if (process.env.TRELLO_DRY_RUN === 'true') {
-      console.log(`[TrelloIntegration] 🧪 TRELLO_DRY_RUN activo: se simula la modificación de "${cardId}".`, queryParams);
-      return { success: true, dryRun: true, data: { id: cardId, ...queryParams } };
+      console.log(`[TrelloIntegration] 🧪 TRELLO_DRY_RUN activo: se simula la modificación de "${cardId}".`, { ...queryParams, comment });
+      return { success: true, dryRun: true, data: { id: cardId, ...queryParams, comment } };
     }
 
     try {
       this.validateCredentials();
+      const data = { id: cardId };
 
-      console.log(`[TrelloIntegration] 📡 Ejecutando modificación para tarjeta "${cardId}"...`, queryParams);
+      if (Object.keys(queryParams).length > 0) {
+        console.log(`[TrelloIntegration] 📡 Ejecutando modificación para tarjeta "${cardId}"...`, queryParams);
+        const response = await this.client.put(`/cards/${cardId}`, null, { params: queryParams });
+        Object.assign(data, response.data);
+      }
 
-      const response = await this.client.put(`/cards/${cardId}`, null, {
-        params: queryParams,
-      });
+      if (comment) {
+        console.log(`[TrelloIntegration] 💬 Publicando comentario en la tarjeta "${cardId}"...`);
+        const response = await this.client.post(`/cards/${cardId}/actions/comments`, null, {
+          params: { text: `${PREFIJO_COMENTARIO}${comment}` },
+        });
+        data.commentId = response.data?.id;
+      }
 
-      console.log(`[TrelloIntegration] ✅ Tarjeta "${cardId}" modificada exitosamente en Trello.`);
+      console.log(`[TrelloIntegration] ✅ Tarjeta "${cardId}" actualizada exitosamente en Trello.`);
       return {
         success: true,
-        data: response.data,
+        data,
       };
     } catch (error) {
       const errorDetails = error.response?.data || error.message;
