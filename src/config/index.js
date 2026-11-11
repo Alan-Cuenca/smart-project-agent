@@ -6,7 +6,28 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '../../');
 
-const CAMPOS_OBLIGATORIOS = ['projectName', 'trelloBoardId', 'projectManagerEmail'];
+/**
+ * Interpreta el JSON de configuración recibido como secreto.
+ * Elimina saltos de línea y tabulaciones antes de parsear: al copiar una línea larga desde
+ * una terminal o un chat suelen colarse saltos en medio de un texto, lo que rompe el JSON.
+ * Así también se puede pegar el archivo project.config.json formateado en varias líneas.
+ *
+ * @param {string} texto
+ * @returns {Object}
+ */
+export const parsearConfigJson = (texto) => {
+  const limpio = String(texto).replace(/^﻿/, '').replace(/[\r\n\t]+/g, '').trim();
+  try {
+    return JSON.parse(limpio);
+  } catch (error) {
+    throw new Error(
+      `[Config] PROJECT_CONFIG_JSON no es un JSON válido: ${error.message}. ` +
+      'Pega el contenido completo de project.config.json (debe empezar con { y terminar con }).'
+    );
+  }
+};
+
+const CAMPOS_OBLIGATORIOS =['projectName', 'trelloBoardId', 'projectManagerEmail'];
 
 // Valores del archivo de ejemplo: si aparecen, la configuración no fue personalizada.
 const VALORES_DE_EJEMPLO = new Set(['65b1234567890abcdef12345', 'pm@example.com']);
@@ -24,11 +45,7 @@ export const loadProjectConfig = (customPath) => {
 
   // En la nube (GitHub Actions / Render) la configuración llega como secreto en PROJECT_CONFIG_JSON.
   if (!customPath && process.env.PROJECT_CONFIG_JSON) {
-    try {
-      config = JSON.parse(process.env.PROJECT_CONFIG_JSON);
-    } catch (error) {
-      throw new Error(`[Config] PROJECT_CONFIG_JSON no es un JSON válido: ${error.message}`);
-    }
+    config = parsearConfigJson(process.env.PROJECT_CONFIG_JSON);
   } else {
     const configPath = customPath || process.env.PROJECT_CONFIG_PATH || path.join(rootDir, 'project.config.json');
 

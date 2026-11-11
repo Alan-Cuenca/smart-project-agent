@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { ejecutarAuditoriaDiaria, ejecutarReporteSemanal } from '../src/workflows/cron.js';
+import { loadProjectConfig } from '../src/config/index.js';
 
 dotenv.config({ quiet: true });
 
@@ -42,9 +43,9 @@ const verificarEntorno = () => {
     problemas.push('PROJECT_CONFIG_JSON: no está definida o está vacía');
   } else if (env.PROJECT_CONFIG_JSON?.trim()) {
     try {
-      JSON.parse(env.PROJECT_CONFIG_JSON);
+      loadProjectConfig(); // parsea (tolerando saltos de línea) y valida los campos obligatorios
     } catch (error) {
-      problemas.push(`PROJECT_CONFIG_JSON: no es JSON válido (${error.message}). Debe ser la línea que empieza con {"projectName"...`);
+      problemas.push(`PROJECT_CONFIG_JSON: ${error.message.replace('[Config] ', '')}`);
     }
   }
 
