@@ -20,20 +20,30 @@ const VALORES_DE_EJEMPLO = new Set(['65b1234567890abcdef12345', 'pm@example.com'
  * @returns {Object} Configuración del proyecto validada.
  */
 export const loadProjectConfig = (customPath) => {
-  const configPath = customPath || process.env.PROJECT_CONFIG_PATH || path.join(rootDir, 'project.config.json');
-
-  if (!fs.existsSync(configPath)) {
-    throw new Error(
-      `[Config] No se encontró ${configPath}. Copia project.config.example.json a project.config.json ` +
-      'y completa el ID real del tablero (usa "npm run trello:boards") y el correo del Gestor.'
-    );
-  }
-
   let config;
-  try {
-    config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-  } catch (error) {
-    throw new Error(`[Config] project.config.json no es un JSON válido: ${error.message}`);
+
+  // En la nube (GitHub Actions / Render) la configuración llega como secreto en PROJECT_CONFIG_JSON.
+  if (!customPath && process.env.PROJECT_CONFIG_JSON) {
+    try {
+      config = JSON.parse(process.env.PROJECT_CONFIG_JSON);
+    } catch (error) {
+      throw new Error(`[Config] PROJECT_CONFIG_JSON no es un JSON válido: ${error.message}`);
+    }
+  } else {
+    const configPath = customPath || process.env.PROJECT_CONFIG_PATH || path.join(rootDir, 'project.config.json');
+
+    if (!fs.existsSync(configPath)) {
+      throw new Error(
+        `[Config] No se encontró ${configPath} ni la variable PROJECT_CONFIG_JSON. Copia project.config.example.json ` +
+        'a project.config.json y completa el ID real del tablero (usa "npm run trello:boards") y el correo del Gestor.'
+      );
+    }
+
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (error) {
+      throw new Error(`[Config] project.config.json no es un JSON válido: ${error.message}`);
+    }
   }
 
   const faltantes = CAMPOS_OBLIGATORIOS.filter((campo) => !String(config[campo] || '').trim());
