@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
-    "test:agent": "node test-run.js"
+    "test:agent": "node test-run.js",
+    "trello:boards": "node scripts/listar-tableros.js",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "keywords": [],
   "author": "",

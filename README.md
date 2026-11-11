@@ -72,6 +72,27 @@ npm run test:agent
 ## 📡 Endpoints Disponibles
 
 - `GET /health`: Verificación del estado del servicio y métricas activas.
-- `GET /api/test-agent`: Dispara la auditoría manual del flujo multiagente y responde de inmediato al cliente mientras se procesa y despacha el correo al PM.
-- `GET /webhook/decision`: Endpoint interactivo Human-in-the-Loop para registrar aprobaciones y rechazos emitidos por el Gestor desde los botones del correo.
+- `GET /api/test-agent` *(requiere `x-admin-token` si `ADMIN_TOKEN` está definido)*: Dispara la auditoría manual del flujo multiagente.
+- `GET /api/pending-actions?status=PENDING` *(admin)*: Lista las acciones registradas (sin tokens).
+- `GET /webhook/decision?actionId&token&decision`: Página de confirmación que se abre desde los botones del correo. **No modifica nada.**
+- `POST /webhook/decision`: Registra la decisión del Gestor y, si aprueba, aplica el cambio en Trello.
 - `POST /webhook/repo-update`: Endpoint receptor genérico de eventos de actualización de repositorios (commits, pushes, PRs).
+
+## 🔒 Flujo de aprobación (Human-in-the-Loop)
+
+1. Los agentes proponen cambios → **validación en código** contra el snapshot real de Trello (tarjeta, lista y miembros existentes; fecha futura; al menos un cambio real). Lo que no pasa se descarta y se registra en consola.
+2. Cada acción válida se guarda en `data/acciones.json` con un **ID único (UUID) y un token secreto**. Sobrevive a reinicios del servidor.
+3. El correo incluye enlaces con ese token. Abrirlos solo muestra una confirmación (los escáneres de enlaces del correo no pueden aprobar nada).
+4. Al confirmar, el cambio se aplica en Trello. Si Trello falla, la acción queda en `FAILED` y puede reintentarse desde el mismo enlace.
+5. Todo queda en `historial.log`.
+
+> Los botones solo funcionan si el servidor está encendido y `APP_BASE_URL` es una URL accesible desde donde se abre el correo (por ejemplo, un despliegue en Render/Railway o un túnel con ngrok).
+
+Para probar sin modificar Trello: `TRELLO_DRY_RUN=true`.
+
+## 🧪 Tests
+
+```bash
+npm test               # tests unitarios y del flujo de aprobación (no llaman a Trello ni a Gemini)
+npm run trello:boards  # lista tus tableros para obtener el trelloBoardId
+```
