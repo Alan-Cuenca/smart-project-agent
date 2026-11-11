@@ -13,7 +13,7 @@ import {
   listarAcciones,
 } from './storage/accionesStore.js';
 import { ejecutarModificacionTrello } from './integrations/trello.js';
-import { inicializarCronSemanal } from './workflows/cron.js';
+import { inicializarTareasProgramadas } from './workflows/cron.js';
 import { ejecutarAuditoriaManual } from './workflows/index.js';
 import { escapeHtml } from './utils/html.js';
 
@@ -217,6 +217,7 @@ const renderHtmlResponse = ({ title, statusType, headline, message, details, act
         ${detalle('Problema', details.problem)}
         ${detalle('Acción', details.action)}
         ${detalle('Nueva Fecha Límite', details.dueDate)}
+        ${detalle('Comentario a publicar', details.comment)}
         ${detalle('Resultado en Trello', details.trelloResult)}
       </div>
       ` : ''}
@@ -273,6 +274,7 @@ const detallesDeAccion = (action, extra = {}) => ({
   problem: action.detectedProblem,
   action: action.recommendedAction,
   dueDate: formatearFecha(action.trelloExecutionParams?.due),
+  comment: action.trelloExecutionParams?.comment,
   ...extra,
 });
 
@@ -458,8 +460,8 @@ if (process.env.NODE_ENV !== 'test') {
       console.warn('[Server] 🧪 TRELLO_DRY_RUN=true: las aprobaciones NO modificarán Trello.');
     }
 
-    // Inicialización del Cronjob Semanal
-    inicializarCronSemanal('0 17 * * 5');
+    // Tareas programadas: auditoría diaria (L-V) y reporte semanal (viernes)
+    inicializarTareasProgramadas();
   });
 }
 
