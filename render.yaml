@@ -1,0 +1,40 @@
+# Render Blueprint: servidor web que atiende los botones Aprobar/Rechazar del correo.
+# Las auditorías programadas corren en GitHub Actions (.github/workflows/auditoria.yml),
+# por eso aquí el cron interno está desactivado.
+services:
+  - type: web
+    name: smart-project-agent
+    runtime: node
+    plan: free
+    region: oregon
+    branch: main
+    autoDeploy: true
+    buildCommand: npm ci --omit=dev
+    startCommand: node src/app.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: CRON_AUDITORIA_DIARIA
+        value: "off"
+      - key: CRON_REPORTE_SEMANAL
+        value: "off"
+      - key: ADMIN_TOKEN
+        generateValue: true
+      # Valores secretos: se completan en el panel de Render (sync: false = no se guardan en el repo)
+      - key: APP_BASE_URL
+        sync: false
+      - key: PROJECT_CONFIG_JSON
+        sync: false
+      - key: TRELLO_API_KEY
+        sync: false
+      - key: TRELLO_TOKEN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: TRELLO_DRY_RUN
+        value: "true"
