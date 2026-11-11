@@ -277,11 +277,12 @@ export async function enviarSolicitudAprobacion(datosDictamen, configProyecto = 
 
     // 1. Registrar cada acción en el almacén persistente (ID único + token secreto)
     const actionItemsRaw = datosDictamen.actionItems || [];
-    const actionItemsConIds = actionItemsRaw.map((item, idx) => {
+    const actionItemsConIds = [];
+    for (const [idx, item] of actionItemsRaw.entries()) {
       const itemCode = item.itemCode || `ACC-${idx + 1}`;
-      const record = registrarAccionPendiente({ ...item, itemCode, projectName });
-      return { ...item, itemCode, actionId: record.actionId, token: record.token };
-    });
+      const record = await registrarAccionPendiente({ ...item, itemCode, projectName });
+      actionItemsConIds.push({ ...item, itemCode, actionId: record.actionId, token: record.token });
+    }
 
     if (actionItemsConIds.length === 0) {
       console.log('[Mailer] ℹ️ El dictamen no contiene acciones que requieran aprobación. Se envía solo el diagnóstico.');
