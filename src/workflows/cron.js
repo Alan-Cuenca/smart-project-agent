@@ -2,7 +2,7 @@ import cron from 'node-cron';
 import { ejecutarFlujoSeguimiento } from './index.js';
 import { sendProjectAlert } from '../notifications/mailer.js';
 import { loadProjectConfig } from '../config/index.js';
-import { fetchTrelloBoardSnapshot } from '../integrations/trello.js';
+import { escapeHtml } from '../utils/html.js';
 
 /**
  * Genera y envía el reporte semanal de avance al Gestor del Proyecto.
@@ -16,14 +16,16 @@ export async function ejecutarReporteSemanal() {
     const config = loadProjectConfig();
     const projectName = config?.projectName || 'Proyecto Genérico';
 
-    // 1. Obtener snapshot actualizado del tablero
-    const snapshot = await fetchTrelloBoardSnapshot();
-    const metrics = snapshot.metrics || {};
-
-    // 2. Ejecutar el flujo multiagente secuencial
+    // 1. Ejecutar el flujo multiagente (incluye el snapshot de Trello).
+    //    Si hay propuestas válidas, el Gestor recibe además el correo con botones de aprobación.
     console.log(`[Cron Semanal] Ejecutando pipeline de agentes (Ejecutor -> Revisor -> Aprobador)...`);
-    const flujoResultado = await ejecutarFlujoSeguimiento({ notificarPM: false });
+    const flujoResultado = await ejecutarFlujoSeguimiento({
+      configProyecto: config,
+      notificarPM: true,
+      notificarSoloConAcciones: true,
+    });
     const dictamen = flujoResultado.aprobadorVerdict;
+    const metrics = flujoResultado.trelloSnapshot?.metrics || {};
 
     // 3. Elaborar reporte de avance semanal (Completadas vs Pendientes)
     const total = metrics.totalCards || 0;
@@ -33,7 +35,7 @@ export async function ejecutarReporteSemanal() {
     const porcentajeAvance = total > 0 ? Math.round((completadas / total) * 100) : 0;
 
     const cardsByListHtml = Object.entries(metrics.cardsByList || {})
-      .map(([lista, cantidad]) => `<li><strong>${lista}:</strong> ${cantidad} tarjeta(s)</li>`)
+      .map(([lista, cantidad]) => `<li><strong>${escapeHtml(lista)}:</strong> ${cantidad} tarjeta(s)</li>`)
       .join('');
 
     const subject = `📊 [Reporte Semanal] Avance de ${projectName} (${porcentajeAvance}% completado)`;
@@ -50,7 +52,7 @@ export async function ejecutarReporteSemanal() {
         
         <div style="background-color: #0f172a; padding: 24px; text-align: center; color: #ffffff;">
           <h1 style="margin: 0; font-size: 20px;">Resumen Semanal de Proyecto</h1>
-          <p style="margin: 6px 0 0 0; color: #94a3b8; font-size: 14px;">${projectName} • Viernes 5:00 PM</p>
+          <p style="margin: 6px 0 0 0; color: #94a3b8; font-size: 14px;">${escapeHtml(projectName)} • Viernes 5:00 PM</p>
         </div>
 
         <div style="padding: 24px;">
@@ -85,7 +87,7 @@ export async function ejecutarReporteSemanal() {
           <!-- Diagnóstico de los Agentes -->
           <h3 style="font-size: 15px; margin-bottom: 8px; color: #0f172a;">Diagnóstico del Agente Aprobador:</h3>
           <p style="background: #f8fafc; border-left: 4px solid #3b82f6; padding: 12px; font-size: 13px; color: #334155; margin: 0 0 20px 0;">
-            ${dictamen.summaryForPM || dictamen.executiveSummary || 'Sin observaciones críticas.'}
+            ${escapeHtml(dictamen.executiveSummary || 'Sin observaciones críticas.')}
           </p>
 
           <!-- Desglose por Listas -->

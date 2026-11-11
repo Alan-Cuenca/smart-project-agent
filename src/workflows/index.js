@@ -3,7 +3,8 @@ import { analizarPlanificacion } from '../agents/ejecutor.js';
 import { revisarPropuesta } from '../agents/revisor.js';
 import { evaluarAprobacion } from '../agents/aprobador.js';
 import { loadProjectConfig } from '../config/index.js';
-import { sendProjectAlert, enviarSolicitudAprobacion } from '../notifications/mailer.js';
+import { enviarSolicitudAprobacion } from '../notifications/mailer.js';
+import { validarAccionesContraTrello } from './validacion.js';
 
 /**
  * Registra un mensaje formateado con marca de tiempo ISO en consola.
@@ -85,20 +86,35 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     console.log('✅ [Aprobador] Generando dictamen...');
     logEtapa('PASO_D_APROBADOR', 'Ejecutando Agente Aprobador para evaluación de impacto y gobernanza...');
-    const dictamenAprobador = await evaluarAprobacion(salidaRevisor, snapshotTrello, config);
+    const dictamenBruto = await evaluarAprobacion(salidaRevisor, snapshotTrello, config);
 
     logEtapa(
       'PASO_D_APROBADOR',
-      `Dictamen de gobernanza emitido con éxito. Riesgo Global: ${dictamenAprobador.overallRisk} | ` +
-      `Solicitudes de cambio preparadas: ${dictamenAprobador.actionItems?.length || 0} | ` +
+      `Dictamen de gobernanza emitido con éxito. Riesgo Global: ${dictamenBruto.overallRisk} | ` +
+      `Solicitudes de cambio propuestas: ${dictamenBruto.actionItems?.length || 0} | ` +
       `Regla HITL activa: SÍ`
+    );
+
+    // =========================================================================
+    // PASO E: VALIDACIÓN DETERMINISTA CONTRA TRELLO (sin IA)
+    // =========================================================================
+    const { dictamen: dictamenAprobador, descartadas } = validarAccionesContraTrello(dictamenBruto, snapshotTrello);
+    descartadas.forEach((d) =>
+      logEtapa('PASO_E_VALIDACION', `Acción descartada [${d.itemCode}] "${d.cardName}": ${d.motivos.join(' ')}`)
+    );
+    logEtapa(
+      'PASO_E_VALIDACION',
+      `Acciones válidas: ${dictamenAprobador.actionItems.length} | Descartadas: ${descartadas.length}`
     );
 
     // =========================================================================
     // PASO OPCIONAL: NOTIFICACIÓN DINÁMICA AL PM (MAILER)
     // =========================================================================
     let notificacionResultado = null;
-    if (opciones.notificarPM) {
+    const sinAcciones = dictamenAprobador.actionItems.length === 0;
+    if (opciones.notificarPM && opciones.notificarSoloConAcciones && sinAcciones) {
+      logEtapa('NOTIFICACION', 'No hay acciones válidas que aprobar; se omite el correo de aprobación.');
+    } else if (opciones.notificarPM) {
       console.log('📧 [Mailer] Despachando notificación de aprobación interactiva al Gestor...');
       logEtapa('NOTIFICACION', `Enviando solicitud de aprobación interactiva al Gestor (${config.projectManagerEmail})...`);
       try {
@@ -124,6 +140,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
       ejecutorOutput: salidaEjecutor,
       revisorOutput: salidaRevisor,
       aprobadorVerdict: dictamenAprobador,
+      accionesDescartadas: descartadas,
       notificacion: notificacionResultado,
     };
 

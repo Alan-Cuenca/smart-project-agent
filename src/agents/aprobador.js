@@ -40,9 +40,11 @@ export const AprobadorVerdictSchema = z.object({
       requiresApproval: z.boolean().default(true).describe('Indica obligatoriamente la necesidad de confirmación humana'),
       trelloExecutionParams: z.object({
         idCard: z.string().describe('ID de la tarjeta a actualizar en la API de Trello'),
-        due: z.string().optional().describe('Nueva fecha límite ISO para la API de Trello o vacio si no aplica'),
-        idMembers: z.array(z.string()).default([]).describe('IDs de miembros para la API de Trello o vacío si no cambia'),
-        idList: z.string().optional().describe('ID de la lista destino en Trello si aplica mover la tarjeta'),
+        due: z.string().optional().describe('Nueva fecha límite en formato ISO 8601. Omitir el campo si la fecha no cambia.'),
+        idMembers: z.array(z.string()).optional().describe(
+          'Lista COMPLETA de IDs de miembros que quedarán asignados (reemplaza a los actuales). Usar solo IDs de trelloContext.members. Omitir si no cambia.'
+        ),
+        idList: z.string().optional().describe('ID de la lista destino, tomado de trelloContext.lists. Omitir si la tarjeta no se mueve.'),
       }).describe('Parámetros exactos preparados para consumir por la API de Trello si el Gestor autoriza.'),
     })
   ).describe('Paquete de solicitudes de cambio estructuradas para autorización del PM.'),
@@ -132,6 +134,9 @@ Estás evaluando la auditoría técnica del proyecto: **"${projectName}"**.
    - Filtra únicamente las acciones que aporten valor real y no generen desestabilización en el equipo.
 3. **Estructuración de Parámetros de Trello:**
    - Provee en \`trelloExecutionParams\` los parámetros exactos (ID de tarjeta, fecha ISO nueva, lista destino, IDs de miembros) para que, en caso de que el Gestor apruebe, el sistema pueda ejecutar la actualización en la API de Trello sin necesidad de volver a consultar a la IA.
+   - Usa EXCLUSIVAMENTE IDs presentes en \`trelloContext\` (cards, lists, members). Nunca inventes IDs.
+   - Incluye solo los campos que cambian. Si una acción no modifica fecha, lista ni responsables (p. ej. un simple seguimiento), no la incluyas en \`actionItems\`; menciónala en el resumen.
+   - Si cambias responsables, \`idMembers\` debe ser la lista completa final (incluye a los actuales que se mantienen).
 4. **Redacción del Informe para el Gestor:**
    - Genera un asunto claro (\`emailSubject\`) y un reporte en Markdown profesional (\`emailBodyMarkdown\`) que presente de forma transparente: el problema detectado, la acción recomendada, la justificación técnica, el impacto y cómo autorizar el cambio.
 `.trim();
@@ -151,6 +156,14 @@ Estás evaluando la auditoría técnica del proyecto: **"${projectName}"**.
         totalCards: datosTrello.metrics?.totalCards,
         overdueCards: datosTrello.metrics?.overdueCards,
         members: datosTrello.members,
+        lists: (datosTrello.lists || []).map((l) => ({ id: l.id, name: l.name })),
+        cards: (datosTrello.cards || []).map((c) => ({
+          id: c.id,
+          name: c.name,
+          listId: c.list?.id,
+          dueDate: c.dueDate,
+          memberIds: (c.assignees || []).map((a) => a.id),
+        })),
       } : null,
     };
 
