@@ -6,6 +6,38 @@ dotenv.config();
 
 const TRELLO_API_BASE_URL = 'https://api.trello.com/1';
 
+const esTextoNoVacio = (valor) => typeof valor === 'string' && valor.trim() !== '';
+
+/**
+ * Normaliza los parámetros generados por la IA antes de enviarlos a Trello.
+ * Descarta valores vacíos para que un campo "sin cambio" nunca borre datos existentes
+ * (p. ej. due: "" eliminaría la fecha límite e idMembers: [] quitaría a todos los responsables).
+ *
+ * @param {Object} params - Parámetros crudos ({ idCard, due, idList, idMembers, name, desc }).
+ * @returns {{ cardId: string|null, queryParams: Object }}
+ */
+export const sanitizarParametrosTrello = (params = {}) => {
+  const cardId = [params.idCard, params.cardId].find(esTextoNoVacio)?.trim() || null;
+  const queryParams = {};
+
+  if (esTextoNoVacio(params.due)) {
+    const fecha = new Date(params.due);
+    if (!Number.isNaN(fecha.getTime())) queryParams.due = fecha.toISOString();
+  }
+
+  if (esTextoNoVacio(params.idList)) queryParams.idList = params.idList.trim();
+
+  const miembros = (Array.isArray(params.idMembers) ? params.idMembers : [params.idMembers])
+    .filter(esTextoNoVacio)
+    .map((m) => m.trim());
+  if (miembros.length > 0) queryParams.idMembers = miembros.join(',');
+
+  if (esTextoNoVacio(params.name)) queryParams.name = params.name.trim();
+  if (esTextoNoVacio(params.desc)) queryParams.desc = params.desc;
+
+  return { cardId, queryParams };
+};
+
 /**
  * Class representing the Trello Integration Service.
  * Follows Object-Oriented Principles to allow multi-tenant instantiation,
@@ -224,6 +256,23 @@ export class TrelloIntegration {
   }
 
   /**
+   * Lista los tableros abiertos accesibles con las credenciales actuales.
+   * Útil para descubrir el trelloBoardId que va en project.config.json.
+   * @returns {Promise<Array<{id: string, name: string, url: string}>>}
+   */
+  async getMyBoards() {
+    this.validateCredentials();
+    try {
+      const response = await this.client.get('/members/me/boards', {
+        params: { filter: 'open', fields: 'name,url' },
+      });
+      return response.data;
+    } catch (error) {
+      this._handleApiError('getMyBoards', error);
+    }
+  }
+
+  /**
    * Fetches only active lists from the board.
    * @param {string} [targetBoardId]
    * @returns {Promise<Array>}
@@ -275,7 +324,7 @@ export class TrelloIntegration {
    * @returns {Promise<Object>} Execution result { success: boolean, data?: Object, error?: string }
    */
   async updateCard(trelloExecutionParams = {}) {
-    const cardId = trelloExecutionParams.idCard || trelloExecutionParams.cardId;
+    const { cardId, queryParams } = sanitizarParametrosTrello(trelloExecutionParams);
 
     if (!cardId) {
       console.error('[TrelloIntegration.updateCard] ⚠️ Parámetro idCard faltante en los parámetros de ejecución.');
@@ -285,19 +334,21 @@ export class TrelloIntegration {
       };
     }
 
+    if (Object.keys(queryParams).length === 0) {
+      console.warn(`[TrelloIntegration.updateCard] ℹ️ La acción para "${cardId}" no contiene cambios aplicables. No se llamó a Trello.`);
+      return {
+        success: false,
+        error: 'La acción no contiene ningún cambio válido para aplicar en Trello (fecha, lista o responsables).',
+      };
+    }
+
+    if (process.env.TRELLO_DRY_RUN === 'true') {
+      console.log(`[TrelloIntegration] 🧪 TRELLO_DRY_RUN activo: se simula la modificación de "${cardId}".`, queryParams);
+      return { success: true, dryRun: true, data: { id: cardId, ...queryParams } };
+    }
+
     try {
       this.validateCredentials();
-
-      const queryParams = {};
-      if (trelloExecutionParams.due !== undefined) queryParams.due = trelloExecutionParams.due;
-      if (trelloExecutionParams.idList) queryParams.idList = trelloExecutionParams.idList;
-      if (trelloExecutionParams.idMembers) {
-        queryParams.idMembers = Array.isArray(trelloExecutionParams.idMembers)
-          ? trelloExecutionParams.idMembers.join(',')
-          : trelloExecutionParams.idMembers;
-      }
-      if (trelloExecutionParams.name) queryParams.name = trelloExecutionParams.name;
-      if (trelloExecutionParams.desc) queryParams.desc = trelloExecutionParams.desc;
 
       console.log(`[TrelloIntegration] 📡 Ejecutando modificación para tarjeta "${cardId}"...`, queryParams);
 
