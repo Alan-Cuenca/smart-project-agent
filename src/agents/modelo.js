@@ -52,6 +52,33 @@ export const crearModeloGemini = (model, temperature) => {
   });
 };
 
+// Modelos que respondieron 429 (cuota agotada) en este proceso, con la hora hasta la que se omiten.
+const modelosAgotados = new Map();
+const PAUSA_TRAS_429_MS = 60 * 60 * 1000;
+
+const esCuotaAgotada = (error) => /429|RESOURCE_EXHAUSTED|quota/i.test(error?.message || '');
+
+/**
+ * Ejecuta la promesa con un corte forzado: aborta la petición y rechaza al vencer el plazo,
+ * aunque el cliente subyacente ignore la señal o esté esperando entre reintentos.
+ */
+const conTiempoLimite = (fn, ms) => {
+  const controller = new AbortController();
+  let timer;
+  const limite = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      const error = new Error(`timeout tras ${ms} ms`);
+      error.name = 'AbortError';
+      reject(error);
+    }, ms);
+  });
+  return Promise.race([fn(controller.signal), limite]).finally(() => clearTimeout(timer));
+};
+
+/** Solo para tests: limpia el registro de modelos sin cuota. */
+export const reiniciarModelosAgotados = () => modelosAgotados.clear();
+
 const esErrorDeAutenticacion = (error) =>
   error?.status === 401 || error?.status === 403 || /API_KEY_INVALID|PERMISSION_DENIED|401|403/.test(error?.message || '');
 
@@ -82,13 +109,19 @@ export async function invocarGemini({ agente, mensajes, temperature = 0.1, schem
   const fallos = [];
 
   for (const nombreModelo of modelos) {
+    const omitirHasta = modelosAgotados.get(nombreModelo);
+    if (omitirHasta && omitirHasta > Date.now()) {
+      fallos.push(`${nombreModelo}: cuota agotada (omitido)`);
+      continue;
+    }
+
     const inicio = Date.now();
     try {
       const modelo = crearModeloGemini(nombreModelo, temperature);
       const runnable = schema ? modelo.withStructuredOutput(schema, { name: schemaName }) : modelo;
 
       console.log(`[${agente}] Consultando Gemini (${nombreModelo}, límite ${Math.round(timeout / 1000)}s)...`);
-      const resultado = await runnable.invoke(mensajes, { timeout });
+      const resultado = await conTiempoLimite((signal) => runnable.invoke(mensajes, { signal }), timeout);
 
       console.log(`[${agente}] Respuesta de ${nombreModelo} en ${((Date.now() - inicio) / 1000).toFixed(1)}s.`);
       return { resultado, modelo: nombreModelo };
@@ -98,6 +131,7 @@ export async function invocarGemini({ agente, mensajes, temperature = 0.1, schem
       }
       const motivo = describirError(error);
       fallos.push(`${nombreModelo}: ${motivo}`);
+      if (esCuotaAgotada(error)) modelosAgotados.set(nombreModelo, Date.now() + PAUSA_TRAS_429_MS);
       console.warn(`[${agente}] ⚠️ ${nombreModelo} falló tras ${((Date.now() - inicio) / 1000).toFixed(1)}s (${motivo}).`);
     }
   }
@@ -108,4 +142,4 @@ export async function invocarGemini({ agente, mensajes, temperature = 0.1, schem
   );
 }
 
-export default { invocarGemini, crearModeloGemini, obtenerModelosConfigurados };
+export default { invocarGemini, crearModeloGemini, obtenerModelosConfigurados, reiniciarModelosAgotados };
