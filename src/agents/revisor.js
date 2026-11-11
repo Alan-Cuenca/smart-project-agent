@@ -1,10 +1,7 @@
-import dotenv from 'dotenv';
 import { z } from 'zod';
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { loadProjectConfig } from '../config/index.js';
-
-dotenv.config();
+import { invocarGemini } from './modelo.js';
 
 /**
  * Esquema Zod de validación estricta para la salida del Agente Revisor.
@@ -38,42 +35,6 @@ export const RevisionSchema = z.object({
     'Dictamen global de calidad del Revisor antes de pasar al Aprobador.'
   ),
 });
-
-/**
- * Resuelve el nombre del modelo Gemini adecuado.
- * @param {string} [customModel]
- * @returns {string}
- */
-const resolverModeloGemini = (customModel) => {
-  const rawModel = customModel || process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-  if (rawModel.includes('1.5') || rawModel.includes('2.5')) {
-    return 'gemini-3.8-flash';
-  }
-  return rawModel;
-};
-
-/**
- * Instancia el modelo ChatGoogleGenerativeAI configurado con baja temperatura.
- * @param {Object} [customConfig={}]
- * @returns {ChatGoogleGenerativeAI}
- */
-export const obtenerModeloRevisor = (customConfig = {}) => {
-  const apiKey = customConfig.apiKey || process.env.GEMINI_API_KEY;
-
-  if (!apiKey) {
-    throw new Error('[AgenteRevisor] GEMINI_API_KEY no configurada en las variables de entorno.');
-  }
-
-  const selectedModel = resolverModeloGemini(customConfig.model || customConfig.modelName);
-
-  return new ChatGoogleGenerativeAI({
-    apiKey: apiKey,
-    model: selectedModel,
-    modelName: selectedModel,
-    temperature: 0.1, // Temperatura muy baja para máxima rigurosidad y detección de errores
-    ...customConfig,
-  });
-};
 
 /**
  * Agente Revisor: Actúa como filtro de calidad y consistencia técnica.
@@ -152,14 +113,15 @@ Tu dictamen debe ser quirúrgico, objetivo e implacable contra las alucinaciones
       `Valida cada acción, corrige cualquier alucinación y genera el dictamen estructurado.`
     );
 
-    const modelo = obtenerModeloRevisor();
-    console.log(`[AgenteRevisor] Auditando calidad y consistencia con Gemini (${modelo.model}) para el proyecto "${projectName}"...`);
+    console.log(`[AgenteRevisor] Auditando calidad y consistencia para el proyecto "${projectName}"...`);
 
-    const modeloEstructurado = modelo.withStructuredOutput(RevisionSchema, {
-      name: 'AuditoriaCalidadRevisor',
+    const { resultado } = await invocarGemini({
+      agente: 'AgenteRevisor',
+      mensajes: [systemMessage, humanMessage],
+      temperature: 0.1, // Temperatura muy baja para máxima rigurosidad y detección de errores
+      schema: RevisionSchema,
+      schemaName: 'AuditoriaCalidadRevisor',
     });
-
-    const resultado = await modeloEstructurado.invoke([systemMessage, humanMessage]);
 
     console.log(
       `[AgenteRevisor] Auditoría completada. Veredicto: ${resultado.qualityVerdict} | Coherencia: ${resultado.consistencyScore}/100 | Acciones validadas: ${resultado.verifiedActions?.length || 0}`
@@ -175,6 +137,5 @@ Tu dictamen debe ser quirúrgico, objetivo e implacable contra las alucinaciones
 
 export default {
   revisarPropuesta,
-  obtenerModeloRevisor,
   RevisionSchema,
 };

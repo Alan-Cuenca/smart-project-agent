@@ -1,10 +1,7 @@
-import dotenv from 'dotenv';
 import { z } from 'zod';
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { loadProjectConfig } from '../config/index.js';
-
-dotenv.config();
+import { invocarGemini } from './modelo.js';
 
 /**
  * Esquema Zod de salida para el Agente Aprobador.
@@ -53,42 +50,6 @@ export const AprobadorVerdictSchema = z.object({
     'Cuerpo completo del reporte en Markdown estructurado, con tablas, justificaciones y llamadas a la acción para el Gestor.'
   ),
 });
-
-/**
- * Resuelve el nombre del modelo Gemini adecuado.
- * @param {string} [customModel]
- * @returns {string}
- */
-const resolverModeloGemini = (customModel) => {
-  const rawModel = customModel || process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-  if (rawModel.includes('1.5') || rawModel.includes('2.5')) {
-    return 'gemini-3.8-flash';
-  }
-  return rawModel;
-};
-
-/**
- * Instancia el modelo ChatGoogleGenerativeAI para el Agente Aprobador.
- * @param {Object} [customConfig={}]
- * @returns {ChatGoogleGenerativeAI}
- */
-export const obtenerModeloAprobador = (customConfig = {}) => {
-  const apiKey = customConfig.apiKey || process.env.GEMINI_API_KEY;
-
-  if (!apiKey) {
-    throw new Error('[AgenteAprobador] GEMINI_API_KEY no configurada en las variables de entorno.');
-  }
-
-  const selectedModel = resolverModeloGemini(customConfig.model || customConfig.modelName);
-
-  return new ChatGoogleGenerativeAI({
-    apiKey: apiKey,
-    model: selectedModel,
-    modelName: selectedModel,
-    temperature: 0.1, // Baja temperatura para estricta gobernanza
-    ...customConfig,
-  });
-};
 
 /**
  * Agente Aprobador: Evalúa las acciones previamente depuradas por el Revisor,
@@ -173,14 +134,15 @@ Estás evaluando la auditoría técnica del proyecto: **"${projectName}"**.
       `Aplica estrictamente la regla de gobernanza (HITL) y genera el paquete de aprobación.`
     );
 
-    const modelo = obtenerModeloAprobador();
-    console.log(`[AgenteAprobador] Evaluando impacto y gobernanza con Gemini (${modelo.model}) para el proyecto "${projectName}"...`);
+    console.log(`[AgenteAprobador] Evaluando impacto y gobernanza para el proyecto "${projectName}"...`);
 
-    const modeloEstructurado = modelo.withStructuredOutput(AprobadorVerdictSchema, {
-      name: 'DictamenAprobacionGobernanza',
+    const { resultado: dictamen } = await invocarGemini({
+      agente: 'AgenteAprobador',
+      mensajes: [systemMessage, humanMessage],
+      temperature: 0.1, // Baja temperatura para estricta gobernanza
+      schema: AprobadorVerdictSchema,
+      schemaName: 'DictamenAprobacionGobernanza',
     });
-
-    const dictamen = await modeloEstructurado.invoke([systemMessage, humanMessage]);
 
     console.log(
       `[AgenteAprobador] Dictamen emitido. Riesgo: ${dictamen.overallRisk} | Solicitudes de cambio: ${dictamen.actionItems?.length || 0} | Requiere aprobación humana: SÍ`
@@ -196,6 +158,5 @@ Estás evaluando la auditoría técnica del proyecto: **"${projectName}"**.
 
 export default {
   evaluarAprobacion,
-  obtenerModeloAprobador,
   AprobadorVerdictSchema,
 };

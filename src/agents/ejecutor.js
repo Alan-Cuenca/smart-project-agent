@@ -1,53 +1,6 @@
-import dotenv from 'dotenv';
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { loadProjectConfig } from '../config/index.js';
-
-dotenv.config();
-
-/**
- * Resuelve el nombre del modelo Gemini adecuado.
- * Mapea identificadores obsoletos (1.5 / 2.5) a gemini-3.8-flash si es necesario.
- * @param {string} [customModel]
- * @returns {string}
- */
-const resolverModeloGemini = (customModel) => {
-  const rawModel = customModel || process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-  if (rawModel.includes('1.5') || rawModel.includes('2.5')) {
-    return 'gemini-3.8-flash';
-  }
-  return rawModel;
-};
-
-/**
- * Instancia y configura el modelo ChatGoogleGenerativeAI con temperatura baja
- * para garantizar análisis matemáticos, analíticos y deterministas.
- * 
- * @param {Object} [customConfig={}] - Opciones opcionales para sobreescribir la configuración.
- * @returns {ChatGoogleGenerativeAI}
- */
-export const obtenerModeloGemini = (customConfig = {}) => {
-  const apiKey = customConfig.apiKey || process.env.GEMINI_API_KEY;
-
-  if (!apiKey) {
-    throw new Error(
-      '[AgenteEjecutor] GEMINI_API_KEY no encontrada en las variables de entorno (.env).'
-    );
-  }
-
-  const selectedModel = resolverModeloGemini(customConfig.model || customConfig.modelName);
-
-  return new ChatGoogleGenerativeAI({
-    apiKey: apiKey,
-    model: selectedModel,
-    modelName: selectedModel,
-    temperature: 0.2, // Temperatura baja para respuestas analíticas y no creativas
-    ...customConfig,
-  });
-};
-
-// Alias de retrocompatibilidad
-export const obtenerModeloOpenAI = obtenerModeloGemini;
+import { invocarGemini } from './modelo.js';
 
 /**
  * Agente Ejecutor: Analiza el estado de las actividades de Trello,
@@ -77,10 +30,7 @@ export async function analizarPlanificacion(datosTrello, configProyecto = null) 
     const projectName = config?.projectName || 'Proyecto Genérico';
     const fechaActual = new Date().toISOString();
 
-    // 1. Instanciación del Modelo con temperatura 0.2
-    const modelo = obtenerModeloGemini();
-
-    // 2. Prompt Engineering: Definición del SystemMessage parametrizado
+    // 1. Prompt Engineering: Definición del SystemMessage parametrizado
     const promptSistema = 
       `Eres un Agente Ejecutor experto en gestión ágil auditando el proyecto ${projectName}. ` +
       `Analiza el siguiente estado de actividades. ` +
@@ -98,31 +48,24 @@ export async function analizarPlanificacion(datosTrello, configProyecto = null) 
 
     const humanMessage = new HumanMessage(contenidoUsuario);
 
-    console.log(`[AgenteEjecutor] Analizando planificación con Gemini (${modelo.model}) para el proyecto: "${projectName}"...`);
+    console.log(`[AgenteEjecutor] Analizando planificación del proyecto "${projectName}"...`);
 
-    // 4. Llamada a la IA y retorno de la propuesta textual
-    const respuesta = await modelo.invoke([systemMessage, humanMessage]);
+    // 3. Llamada a la IA (con tiempo límite y modelos de respaldo) y retorno de la propuesta textual
+    const { resultado } = await invocarGemini({
+      agente: 'AgenteEjecutor',
+      mensajes: [systemMessage, humanMessage],
+      temperature: 0.2, // Temperatura baja para respuestas analíticas y no creativas
+    });
 
     console.log(`[AgenteEjecutor] Propuesta de planificación generada exitosamente.`);
-    return respuesta.content;
+    return resultado.content;
 
   } catch (error) {
     console.error('[AgenteEjecutor] Error al procesar la auditoría con Google Gemini:', error.message);
-
-    // Identificación de causas comunes de error
-    if (error.status === 401 || error.message.includes('API_KEY_INVALID') || error.message.includes('401')) {
-      throw new Error('[AgenteEjecutor Falló]: GEMINI_API_KEY inválida o no configurada.');
-    }
-    if (error.status === 429 || error.message.includes('429') || error.message.includes('RESOURCE_EXHAUSTED')) {
-      throw new Error('[AgenteEjecutor Falló]: Se ha excedido la cuota o límite de tasa en la API de Google Gemini.');
-    }
-
     throw new Error(`[AgenteEjecutor Falló]: ${error.message}`);
   }
 }
 
 export default {
   analizarPlanificacion,
-  obtenerModeloGemini,
-  obtenerModeloOpenAI,
 };
