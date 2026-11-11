@@ -83,7 +83,12 @@ export const loadProjectConfig = (customPath) => {
     if (!Array.isArray(config.team)) throw new Error('[Config] "team" debe ser una lista.');
     config.team.forEach((m, i) => {
       if (!m?.name || !m?.trelloUsername) {
-        throw new Error(`[Config] team[${i}] requiere "name" y "trelloUsername".`);
+        // Se muestran solo los NOMBRES de las claves recibidas (no sus valores) para diagnosticar copias dañadas.
+        const claves = m && typeof m === 'object' ? Object.keys(m).map((k) => JSON.stringify(k)).join(', ') : typeof m;
+        throw new Error(
+          `[Config] team[${i}] requiere "name" y "trelloUsername". Claves recibidas: ${claves}. ` +
+          'Si alguna aparece cortada o con espacios, el texto se dañó al copiarlo.'
+        );
       }
     });
   }
