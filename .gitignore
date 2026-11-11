@@ -9,6 +9,9 @@ node_modules/
 # Local project configuration (instance specific)
 project.config.json
 
+# Persisted pending actions (contain approval tokens)
+data/
+
 # Logs
 *.log
 logs/
