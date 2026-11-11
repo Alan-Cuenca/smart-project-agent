@@ -48,6 +48,23 @@ export const loadProjectConfig = (customPath) => {
     );
   }
 
+  if (config.deadline && Number.isNaN(new Date(config.deadline).getTime())) {
+    throw new Error(`[Config] "deadline" no es una fecha válida: ${config.deadline}`);
+  }
+
+  if (config.team !== undefined) {
+    if (!Array.isArray(config.team)) throw new Error('[Config] "team" debe ser una lista.');
+    config.team.forEach((m, i) => {
+      if (!m?.name || !m?.trelloUsername) {
+        throw new Error(`[Config] team[${i}] requiere "name" y "trelloUsername".`);
+      }
+    });
+  }
+
+  if (config.repository && (!config.repository.owner || !config.repository.name)) {
+    throw new Error('[Config] "repository" requiere "owner" y "name".');
+  }
+
   return config;
 };
 

@@ -1,6 +1,29 @@
 {
   "projectName": "Sample Project",
-  "repositoryUrl": "https://github.com/example-org/sample-repo",
+  "projectDescription": "Descripción breve del producto que se está construyendo.",
   "trelloBoardId": "65b1234567890abcdef12345",
-  "projectManagerEmail": "pm@example.com"
+  "projectManagerEmail": "pm@example.com",
+  "deadline": "2026-12-31",
+  "timezone": "America/Guayaquil",
+  "repository": {
+    "owner": "example-org",
+    "name": "sample-repo",
+    "branch": "main"
+  },
+  "team": [
+    {
+      "name": "Persona Desarrolladora",
+      "trelloUsername": "usuario_trello",
+      "gitEmails": ["dev@example.com"],
+      "role": "Backend",
+      "assignable": true
+    },
+    {
+      "name": "Persona Revisora",
+      "trelloUsername": "revisor_trello",
+      "gitEmails": [],
+      "role": "Revisor (no recibe tareas)",
+      "assignable": false
+    }
+  ]
 }
