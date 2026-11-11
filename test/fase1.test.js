@@ -18,7 +18,7 @@ const { sanitizarParametrosTrello } = await import('../src/integrations/trello.j
 const { validarAccionesContraTrello } = await import('../src/workflows/validacion.js');
 const store = await import('../src/storage/accionesStore.js');
 const { escapeHtml } = await import('../src/utils/html.js');
-const { default: app } = await import('../src/app.js');
+const { default: app, validarEntornoProduccion } = await import('../src/app.js');
 
 let server;
 let baseUrl;
@@ -111,16 +111,26 @@ test('validación: descarta tarjeta inventada, fecha pasada, lista y miembro ine
 // Almacén persistente
 // ---------------------------------------------------------------------------
 
-test('almacén: IDs únicos aunque la IA repita el itemCode, y persisten en disco', () => {
-  const a = store.registrarAccionPendiente({ itemCode: 'SOL-01', cardId: 'card-1' });
-  const b = store.registrarAccionPendiente({ itemCode: 'SOL-01', cardId: 'card-1' });
+test('almacén: IDs únicos, solo guarda el hash del token y no expone secretos', async () => {
+  const a = await store.registrarAccionPendiente({ itemCode: 'SOL-01', cardId: 'card-1' });
+  const b = await store.registrarAccionPendiente({ itemCode: 'SOL-01', cardId: 'card-1' });
   assert.notEqual(a.actionId, b.actionId);
 
   const enDisco = JSON.parse(fs.readFileSync(process.env.ACTIONS_STORE_PATH, 'utf8'));
   assert.ok(enDisco[a.actionId] && enDisco[b.actionId]);
-  assert.ok(store.tokenValido(a, a.token));
-  assert.ok(!store.tokenValido(a, b.token));
-  assert.ok(store.listarAcciones().every((x) => !('token' in x)));
+  assert.ok(!JSON.stringify(enDisco).includes(a.token), 'el token en claro no debe almacenarse');
+
+  const guardada = await store.obtenerAccion(a.actionId);
+  assert.ok(store.tokenValido(guardada, a.token));
+  assert.ok(!store.tokenValido(guardada, b.token));
+  assert.ok((await store.listarAcciones()).every((x) => !('token' in x) && !('tokenHash' in x)));
+});
+
+test('almacén: el enlace caduca según ACTION_TTL_DAYS', async () => {
+  const a = await store.registrarAccionPendiente({ cardId: 'card-1' });
+  const guardada = await store.obtenerAccion(a.actionId);
+  assert.equal(store.accionExpirada(guardada), false);
+  assert.equal(store.accionExpirada(guardada, new Date(Date.now() + 15 * 24 * 60 * 60 * 1000)), true);
 });
 
 test('escapeHtml neutraliza etiquetas', () => {
@@ -138,51 +148,71 @@ const nuevaAccion = () => store.registrarAccionPendiente({
   trelloExecutionParams: { idCard: 'card-1', due: '2030-02-01T00:00:00.000Z' },
 });
 
+const estado = async (id) => (await store.obtenerAccion(id)).status;
+
 const postDecision = (body) => fetch(`${baseUrl}/webhook/decision`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   body: new URLSearchParams(body),
 });
 
-test('GET del enlace solo muestra confirmación y no cambia el estado', async () => {
-  const a = nuevaAccion();
+test('GET del enlace solo muestra confirmación, con cabeceras de seguridad', async () => {
+  const a = await nuevaAccion();
   const res = await fetch(`${baseUrl}/webhook/decision?actionId=${a.actionId}&token=${a.token}&decision=approve`);
   const html = await res.text();
   assert.equal(res.status, 200);
   assert.match(html, /method="POST"/);
   assert.match(html, /&lt;b&gt;Catering&lt;\/b&gt;/); // escapado
-  assert.equal(store.obtenerAccion(a.actionId).status, 'PENDING');
+  assert.equal(res.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal(res.headers.get('x-frame-options'), 'DENY');
+  assert.equal(res.headers.get('x-powered-by'), null);
+  assert.equal(await estado(a.actionId), 'PENDING');
 });
 
-test('token inválido es rechazado', async () => {
-  const a = nuevaAccion();
+test('token inválido o actionId malformado son rechazados', async () => {
+  const a = await nuevaAccion();
   const res = await postDecision({ actionId: a.actionId, token: 'x'.repeat(48), decision: 'approve' });
   assert.equal(res.status, 404);
-  assert.equal(store.obtenerAccion(a.actionId).status, 'PENDING');
+  const malformado = await postDecision({ actionId: '../../etc', token: a.token, decision: 'approve' });
+  assert.equal(malformado.status, 404);
+  assert.equal(await estado(a.actionId), 'PENDING');
 });
 
 test('POST approve aplica (dry run) y es idempotente', async () => {
-  const a = nuevaAccion();
+  const a = await nuevaAccion();
   const res = await postDecision({ actionId: a.actionId, token: a.token, decision: 'approve' });
   assert.equal(res.status, 200);
-  const guardada = store.obtenerAccion(a.actionId);
+  const guardada = await store.obtenerAccion(a.actionId);
   assert.equal(guardada.status, 'APPROVED');
   assert.equal(guardada.executionResult.dryRun, true);
 
   const segunda = await postDecision({ actionId: a.actionId, token: a.token, decision: 'reject' });
   assert.match(await segunda.text(), /ya aprobada/i);
-  assert.equal(store.obtenerAccion(a.actionId).status, 'APPROVED');
+  assert.equal(await estado(a.actionId), 'APPROVED');
 });
 
 test('POST reject registra el rechazo', async () => {
-  const a = nuevaAccion();
+  const a = await nuevaAccion();
   await postDecision({ actionId: a.actionId, token: a.token, decision: 'reject' });
-  assert.equal(store.obtenerAccion(a.actionId).status, 'REJECTED');
+  assert.equal(await estado(a.actionId), 'REJECTED');
 });
 
-test('endpoints admin exigen ADMIN_TOKEN', async () => {
+test('endpoints admin exigen ADMIN_TOKEN por header (no por URL)', async () => {
   const sin = await fetch(`${baseUrl}/api/pending-actions`);
   assert.equal(sin.status, 401);
+  const porUrl = await fetch(`${baseUrl}/api/pending-actions?adminToken=secreto-admin`);
+  assert.equal(porUrl.status, 401);
   const con = await fetch(`${baseUrl}/api/pending-actions`, { headers: { 'x-admin-token': 'secreto-admin' } });
   assert.equal(con.status, 200);
+});
+
+test('producción: rechaza configuración insegura', () => {
+  assert.equal(validarEntornoProduccion({}).length, 3);
+  assert.deepEqual(validarEntornoProduccion({
+    ADMIN_TOKEN: 'a'.repeat(32),
+    APP_BASE_URL: 'https://agente.onrender.com',
+    SUPABASE_URL: 'https://x.supabase.co',
+    SUPABASE_SERVICE_ROLE_KEY: 'k',
+  }), []);
+  assert.match(validarEntornoProduccion({ ADMIN_TOKEN: 'a'.repeat(32), APP_BASE_URL: 'http://x', SUPABASE_URL: 'u', SUPABASE_SERVICE_ROLE_KEY: 'k' })[0], /https/);
 });

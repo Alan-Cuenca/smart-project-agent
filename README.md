@@ -22,6 +22,10 @@ smart-project-agent/
 └── README.md
 ```
 
+## ☁️ Producción (gratis)
+
+Para que funcione sin tu PC encendida: **Supabase** (datos) + **Render** (botones del correo) + **GitHub Actions** (auditorías programadas). Guía paso a paso en [DEPLOY.md](DEPLOY.md).
+
 ## 🚀 Inicio Rápido
 
 ### 1. Instalación de dependencias
