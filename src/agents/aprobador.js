@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { loadProjectConfig } from '../config/index.js';
 import { invocarGemini } from './modelo.js';
+import { equipoParaPrompt } from './ejecutor.js';
 
 /**
  * Esquema Zod de salida para el Agente Aprobador.
@@ -42,6 +43,9 @@ export const AprobadorVerdictSchema = z.object({
           'Lista COMPLETA de IDs de miembros que quedarán asignados (reemplaza a los actuales). Usar solo IDs de trelloContext.members. Omitir si no cambia.'
         ),
         idList: z.string().optional().describe('ID de la lista destino, tomado de trelloContext.lists. Omitir si la tarjeta no se mueve.'),
+        comment: z.string().optional().describe(
+          'Comentario breve y accionable (máx. ~800 caracteres, Markdown) que se publicará en la tarjeta. Omitir si no aplica.'
+        ),
       }).describe('Parámetros exactos preparados para consumir por la API de Trello si el Gestor autoriza.'),
     })
   ).describe('Paquete de solicitudes de cambio estructuradas para autorización del PM.'),
@@ -61,7 +65,7 @@ export const AprobadorVerdictSchema = z.object({
  * @param {Object} [configProyecto] - Configuración del proyecto (project.config.json).
  * @returns {Promise<Object>} Dictamen final estructurado listo para enviar por correo al Gestor.
  */
-export async function evaluarAprobacion(propuestaRevisada, datosTrello = null, configProyecto = null) {
+export async function evaluarAprobacion(propuestaRevisada, datosTrello = null, configProyecto = null, metricas = null) {
   try {
     if (!propuestaRevisada) {
       throw new Error('[AgenteAprobador] Se requieren las acciones validadas del Agente Revisor.');
@@ -87,17 +91,21 @@ Estás evaluando la auditoría técnica del proyecto: **"${projectName}"**.
 "Ninguna modificación que afecte la planificación, las fechas o las tarjetas de Trello puede ejecutarse automáticamente sin la autorización humana previa y explícita del Gestor del Proyecto (${projectManagerEmail})."
 
 **Tus responsabilidades:**
-1. **Clasificación de Riesgo e Impacto:**
-   - **BAJO:** Ajustes menores de reprogramación (1-2 días) en tareas no críticas.
-   - **MEDIO:** Reasignación de miembros o reprogramación de 3-5 días.
-   - **ALTO/CRITICO:** Retrasos significativos que comprometen hitos clave, cuellos de botella severos o tareas bloqueadas.
+1. **Clasificación de Riesgo e Impacto** (considerando ${metricas?.entrega ? `la entrega del ${metricas.entrega.fecha}, a ${metricas.entrega.diasRestantes} días` : 'el cronograma'}):
+   - **BAJO:** comentarios informativos o ajustes que no afectan la ruta hacia la entrega.
+   - **MEDIO:** asignaciones de responsables o reprogramaciones dentro del margen disponible.
+   - **ALTO/CRITICO:** tareas vencidas o en la ruta crítica, CI roto, o riesgos que comprometen la fecha de entrega.
 2. **Determinación de Acciones Solicitables:**
-   - Filtra únicamente las acciones que aporten valor real y no generen desestabilización en el equipo.
+   - Filtra únicamente las acciones que aporten valor real y no generen desestabilización en el equipo (máximo 6).
+   - Solo acciones sobre tareas pendientes. Nunca asignes a miembros con \`puedeRecibirTareas: false\`.
 3. **Estructuración de Parámetros de Trello:**
-   - Provee en \`trelloExecutionParams\` los parámetros exactos (ID de tarjeta, fecha ISO nueva, lista destino, IDs de miembros) para que, en caso de que el Gestor apruebe, el sistema pueda ejecutar la actualización en la API de Trello sin necesidad de volver a consultar a la IA.
+   - Provee en \`trelloExecutionParams\` los parámetros exactos (ID de tarjeta, fecha ISO nueva, lista destino, IDs de miembros, comentario) para que, en caso de que el Gestor apruebe, el sistema pueda ejecutar la actualización en la API de Trello sin necesidad de volver a consultar a la IA.
    - Usa EXCLUSIVAMENTE IDs presentes en \`trelloContext\` (cards, lists, members). Nunca inventes IDs.
-   - Incluye solo los campos que cambian. Si una acción no modifica fecha, lista ni responsables (p. ej. un simple seguimiento), no la incluyas en \`actionItems\`; menciónala en el resumen.
+   - Incluye solo los campos que cambian. Una acción puede ser solo un \`comment\`. Si una acción no modifica fecha, lista, responsables ni agrega comentario, no la incluyas en \`actionItems\`; menciónala en el resumen.
    - Si cambias responsables, \`idMembers\` debe ser la lista completa final (incluye a los actuales que se mantienen).
+   - Los comentarios se publican tal cual en la tarjeta: redáctalos para el equipo, en español, concretos y sin mencionar a la IA.
+   - **IMPORTANTE:** solo se aplica lo que está en \`trelloExecutionParams\`. Si \`recommendedAction\` implica comunicar algo al equipo (alertar del CI fallido, pedir congelamiento de código, indicar qué verificar), ese mensaje DEBE ir en \`comment\`; de lo contrario no llegará a nadie.
+   - No incluyas \`due\` si la fecha no cambia de día respecto a la actual de la tarjeta.
 4. **Redacción del Informe para el Gestor:**
    - Genera un asunto claro (\`emailSubject\`) y un reporte en Markdown profesional (\`emailBodyMarkdown\`) que presente de forma transparente: el problema detectado, la acción recomendada, la justificación técnica, el impacto y cómo autorizar el cambio.
 `.trim();
@@ -112,13 +120,19 @@ Estás evaluando la auditoría técnica del proyecto: **"${projectName}"**.
         trelloBoardId,
       },
       propuestaRevisada,
+      metricasProyecto: metricas ? {
+        entrega: metricas.entrega,
+        faseActual: metricas.faseActual,
+        avanceGlobal: metricas.avanceGlobal,
+        alertas: metricas.alertas.map(({ severidad, codigo, mensaje }) => ({ severidad, codigo, mensaje })),
+      } : null,
       trelloContext: datosTrello ? {
         boardName: datosTrello.board?.name,
         totalCards: datosTrello.metrics?.totalCards,
         overdueCards: datosTrello.metrics?.overdueCards,
-        members: datosTrello.members,
+        members: metricas ? equipoParaPrompt(metricas) : datosTrello.members,
         lists: (datosTrello.lists || []).map((l) => ({ id: l.id, name: l.name })),
-        cards: (datosTrello.cards || []).map((c) => ({
+        cards: (datosTrello.cards || []).filter((c) => !c.dueComplete).map((c) => ({
           id: c.id,
           name: c.name,
           listId: c.list?.id,

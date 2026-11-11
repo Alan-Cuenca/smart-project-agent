@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { loadProjectConfig } from '../config/index.js';
 import { invocarGemini } from './modelo.js';
+import { equipoParaPrompt } from './ejecutor.js';
 
 /**
  * Esquema Zod de validación estricta para la salida del Agente Revisor.
@@ -22,11 +23,14 @@ export const RevisionSchema = z.object({
       validationStatus: z.enum(['APROBADO', 'CORREGIDO', 'RECHAZADO']).describe(
         'Estado de validación de la acción propuesta'
       ),
-      actionType: z.enum(['REPROGRAMACION', 'REASIGNACION', 'CAMBIO_PRIORIDAD', 'DESGLOSE', 'SEGUIMIENTO']).describe(
+      actionType: z.enum(['ASIGNACION', 'REPROGRAMACION', 'COMENTARIO', 'SEGUIMIENTO']).describe(
         'Tipo de acción correctiva validada'
       ),
       suggestedDueDate: z.string().optional().describe('Fecha límite corregida/validada en formato ISO'),
-      suggestedAssignee: z.string().optional().describe('Responsable sugerido verificado existente en el equipo'),
+      suggestedAssigneeIds: z.array(z.string()).optional().describe(
+        'trelloMemberId de los responsables sugeridos (solo miembros con puedeRecibirTareas: true)'
+      ),
+      suggestedComment: z.string().optional().describe('Texto del comentario a publicar en la tarjeta, si la acción es COMENTARIO'),
       technicalRationale: z.string().describe('Justificación técnica de la viabilidad de la acción'),
       reviewCorrectionNotes: z.string().optional().describe('Nota explicativa si la acción requirió corrección o si fue descartada'),
     })
@@ -46,7 +50,7 @@ export const RevisionSchema = z.object({
  * @param {Object} [configProyecto] - Configuración general del proyecto.
  * @returns {Promise<Object>} Resultado validado y corregido por el Revisor.
  */
-export async function revisarPropuesta(propuestaEjecutor, datosTrello, configProyecto = null) {
+export async function revisarPropuesta(propuestaEjecutor, datosTrello, configProyecto = null, metricas = null) {
   try {
     if (!propuestaEjecutor) {
       throw new Error('[AgenteRevisor] Se requiere la propuesta generada por el Agente Ejecutor.');
@@ -67,18 +71,20 @@ export async function revisarPropuesta(propuestaEjecutor, datosTrello, configPro
     const fechaActual = new Date().toISOString();
 
     const systemPrompt = `
-Eres un **Agente Revisor Senior de Calidad y Validación Técnica** para proyectos de software.
+Eres un **Agente Revisor Senior de Calidad y Validación Técnica** para proyectos de software con fecha de entrega fija.
 Estás auditando el proyecto: **"${projectName}"**.
 
 Tu misión es actuar como el **filtro de calidad y consistencia**:
-1. **Control de Alucinaciones (Ground Truth):** Contrasta cada afirmación del Agente Ejecutor contra el JSON real de Trello.
-   - Verifica que los IDs de tarjeta (\`id\`), nombres de tarea y listas pertenezcan estrictamente al tablero auditado.
-   - Verifica que los miembros sugeridos para reasignación realmente existan en la lista de \`members\` del tablero.
-2. **Coherencia Matemática y Realismo Temporal:**
-   - Fecha actual del sistema: **${fechaActual}**.
-   - Ninguna fecha sugerida de reprogramación puede ser anterior o igual a la fecha actual.
-   - Los plazos de reprogramación deben ser viables (evitar reprogramar tareas complejas para el mismo día).
-3. **Depuración y Ajuste:**
+1. **Control de Alucinaciones (Ground Truth):** Contrasta cada afirmación del Agente Ejecutor contra los datos reales.
+   - Verifica que los IDs de tarjeta, nombres de tarea y fases pertenezcan al tablero auditado y que la tarea esté PENDIENTE.
+   - Verifica que los responsables sugeridos existan en \`equipo\` y tengan \`puedeRecibirTareas: true\`. Rechaza o corrige cualquier asignación a revisores.
+   - Verifica que las cifras citadas coincidan con las métricas calculadas por el sistema.
+2. **Coherencia Temporal:**
+   - Fecha actual del sistema: **${fechaActual}**.${metricas?.entrega ? `\n   - Fecha de entrega del proyecto: **${metricas.entrega.fecha}**. Ninguna fecha puede superarla.` : ''}
+   - Ninguna fecha sugerida puede ser anterior o igual a la fecha actual, y los plazos deben ser viables.
+3. **Coherencia de Roles:** las asignaciones deben corresponder al rol de cada persona (p. ej. documentación → rol de documentación; despliegue/backend → roles técnicos) y considerar su carga actual.
+4. **Comentarios:** deben ser concretos, accionables y basados en hechos de los datos (alertas, CI, commits). Rechaza comentarios genéricos.
+5. **Depuración y Ajuste:**
    - Si una recomendación del Ejecutor es viable y veraz, márcala como \`APROBADO\`.
    - Si contiene datos erróneos pero la intención es válida, corrígela y márcala como \`CORREGIDO\` detallando la corrección en \`reviewCorrectionNotes\`.
    - Si es absurda, alucinada o inviable, márcala como \`RECHAZADO\`.
@@ -91,19 +97,27 @@ Tu dictamen debe ser quirúrgico, objetivo e implacable contra las alucinaciones
     // Contexto de contraste: Ground Truth + Propuesta a auditar
     const payloadRevision = {
       timestampRevision: fechaActual,
-      groundTruthTrello: {
-        board: datosTrello.board,
-        lists: datosTrello.lists,
-        members: datosTrello.members,
-        cardsResumen: (datosTrello.cards || []).map(c => ({
-          id: c.id,
-          name: c.name,
-          listName: c.list?.name,
-          dueDate: c.dueDate,
-          dueComplete: c.dueComplete,
-          assignees: (c.assignees || []).map(a => a.fullName || a.username),
-        })),
-      },
+      groundTruth: metricas
+        ? {
+            entrega: metricas.entrega,
+            faseActual: metricas.faseActual,
+            fases: metricas.fases.map(({ id, nombre, avance, pendientes, inicio, fin }) => ({ id, nombre, avance, pendientes, inicio, fin })),
+            tareasPendientes: metricas.tareasPendientes,
+            equipo: equipoParaPrompt(metricas),
+            alertas: metricas.alertas,
+            ci: metricas.repositorio?.ci || null,
+          }
+        : {
+            lists: datosTrello.lists,
+            members: datosTrello.members,
+            cardsResumen: (datosTrello.cards || []).map((c) => ({
+              id: c.id,
+              name: c.name,
+              listName: c.list?.name,
+              dueDate: c.dueDate,
+              dueComplete: c.dueComplete,
+            })),
+          },
       propuestaEjecutor: typeof propuestaEjecutor === 'string' ? propuestaEjecutor : JSON.stringify(propuestaEjecutor, null, 2),
     };
 

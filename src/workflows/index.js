@@ -5,6 +5,10 @@ import { evaluarAprobacion } from '../agents/aprobador.js';
 import { loadProjectConfig } from '../config/index.js';
 import { enviarSolicitudAprobacion } from '../notifications/mailer.js';
 import { validarAccionesContraTrello } from './validacion.js';
+import { obtenerActividadRepositorio } from '../integrations/github.js';
+import { calcularMetricas } from '../analysis/metricas.js';
+
+const DIAS_VENTANA_GITHUB = 14;
 
 /**
  * Registra un mensaje formateado con marca de tiempo ISO en consola.
@@ -47,8 +51,8 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     console.log('📋 [Trello] Extrayendo datos y métricas del tablero...');
     logEtapa('PASO_A_TRELLO', 'Consultando snapshot del tablero de Trello...');
-    const snapshotTrello = await fetchTrelloBoardSnapshot(opciones.boardId);
-    
+    const snapshotTrello = await fetchTrelloBoardSnapshot(opciones.boardId || config.trelloBoardId);
+
     logEtapa(
       'PASO_A_TRELLO',
       `Snapshot obtenido con éxito: Tablero "${snapshotTrello.board?.name}" | ` +
@@ -58,11 +62,36 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     );
 
     // =========================================================================
+    // PASO A2: GITHUB + MÉTRICAS DETERMINISTAS (sin IA)
+    // =========================================================================
+    let actividadGithub = null;
+    if (config.repository) {
+      logEtapa('PASO_A2_GITHUB', `Consultando actividad de ${config.repository.owner}/${config.repository.name}...`);
+      actividadGithub = await obtenerActividadRepositorio(config.repository, {
+        desde: new Date(Date.now() - DIAS_VENTANA_GITHUB * 24 * 60 * 60 * 1000),
+      });
+      logEtapa(
+        'PASO_A2_GITHUB',
+        actividadGithub.disponible
+          ? `Commits en los últimos ${DIAS_VENTANA_GITHUB} días: ${actividadGithub.commits.length} | CI: ${actividadGithub.ci?.resultado || 'sin datos'}`
+          : `GitHub no disponible: ${actividadGithub.error}`
+      );
+    }
+
+    const metricas = calcularMetricas({ snapshot: snapshotTrello, config, github: actividadGithub });
+    logEtapa(
+      'PASO_A2_METRICAS',
+      `Avance global: ${metricas.avanceGlobal}% | Fase actual: ${metricas.faseActual} | ` +
+      `${metricas.entrega ? `Días para la entrega: ${metricas.entrega.diasRestantes} | ` : ''}` +
+      `Alertas: ${metricas.alertas.map((a) => `${a.severidad}:${a.codigo}`).join(', ') || 'ninguna'}`
+    );
+
+    // =========================================================================
     // PASO B: AGENTE EJECUTOR (Detección y Propuesta Inicial)
     // =========================================================================
     console.log('🤖 [Ejecutor] Analizando tareas...');
-    logEtapa('PASO_B_EJECUTOR', 'Ejecutando Agente Ejecutor para detección matemática de desviaciones...');
-    const salidaEjecutor = await analizarPlanificacion(snapshotTrello, config);
+    logEtapa('PASO_B_EJECUTOR', 'Ejecutando Agente Ejecutor sobre las métricas del proyecto...');
+    const salidaEjecutor = await analizarPlanificacion(snapshotTrello, config, metricas);
     
     logEtapa('PASO_B_EJECUTOR', 'Propuesta analítica generada exitosamente por el Agente Ejecutor.');
 
@@ -71,7 +100,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     console.log('🕵️‍♂️ [Revisor] Validando...');
     logEtapa('PASO_C_REVISOR', 'Ejecutando Agente Revisor para contrastar contra Ground Truth...');
-    const salidaRevisor = await revisarPropuesta(salidaEjecutor, snapshotTrello, config);
+    const salidaRevisor = await revisarPropuesta(salidaEjecutor, snapshotTrello, config, metricas);
 
     logEtapa(
       'PASO_C_REVISOR',
@@ -86,7 +115,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     console.log('✅ [Aprobador] Generando dictamen...');
     logEtapa('PASO_D_APROBADOR', 'Ejecutando Agente Aprobador para evaluación de impacto y gobernanza...');
-    const dictamenBruto = await evaluarAprobacion(salidaRevisor, snapshotTrello, config);
+    const dictamenBruto = await evaluarAprobacion(salidaRevisor, snapshotTrello, config, metricas);
 
     logEtapa(
       'PASO_D_APROBADOR',
@@ -98,7 +127,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     // PASO E: VALIDACIÓN DETERMINISTA CONTRA TRELLO (sin IA)
     // =========================================================================
-    const { dictamen: dictamenAprobador, descartadas } = validarAccionesContraTrello(dictamenBruto, snapshotTrello);
+    const { dictamen: dictamenAprobador, descartadas } = validarAccionesContraTrello(dictamenBruto, snapshotTrello, { config });
     descartadas.forEach((d) =>
       logEtapa('PASO_E_VALIDACION', `Acción descartada [${d.itemCode}] "${d.cardName}": ${d.motivos.join(' ')}`)
     );
@@ -112,13 +141,14 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // =========================================================================
     let notificacionResultado = null;
     const sinAcciones = dictamenAprobador.actionItems.length === 0;
-    if (opciones.notificarPM && opciones.notificarSoloConAcciones && sinAcciones) {
-      logEtapa('NOTIFICACION', 'No hay acciones válidas que aprobar; se omite el correo de aprobación.');
+    const hayAlertasGraves = metricas.alertas.some((a) => a.severidad === 'CRITICA' || a.severidad === 'ALTA');
+    if (opciones.notificarPM && opciones.notificarSoloConAcciones && sinAcciones && !hayAlertasGraves) {
+      logEtapa('NOTIFICACION', 'Sin acciones que aprobar ni alertas graves; se omite el correo.');
     } else if (opciones.notificarPM) {
       console.log('📧 [Mailer] Despachando notificación de aprobación interactiva al Gestor...');
       logEtapa('NOTIFICACION', `Enviando solicitud de aprobación interactiva al Gestor (${config.projectManagerEmail})...`);
       try {
-        notificacionResultado = await enviarSolicitudAprobacion(dictamenAprobador, config);
+        notificacionResultado = await enviarSolicitudAprobacion(dictamenAprobador, config, metricas);
         logEtapa('NOTIFICACION', `Correo de aprobación interactivo enviado exitosamente (Acciones: ${notificacionResultado.registeredActionsCount}).`);
       } catch (mailError) {
         logEtapa('NOTIFICACION_WARN', `No se pudo enviar el correo: ${mailError.message}`);
@@ -137,6 +167,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
         boardId: snapshotTrello.board?.id,
       },
       trelloSnapshot: snapshotTrello,
+      metricas,
       ejecutorOutput: salidaEjecutor,
       revisorOutput: salidaRevisor,
       aprobadorVerdict: dictamenAprobador,
