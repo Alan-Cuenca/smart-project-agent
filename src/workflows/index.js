@@ -140,6 +140,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
     // PASO OPCIONAL: NOTIFICACIÓN DINÁMICA AL PM (MAILER)
     // =========================================================================
     let notificacionResultado = null;
+    let notificacionError = null;
     const sinAcciones = dictamenAprobador.actionItems.length === 0;
     const hayAlertasGraves = metricas.alertas.some((a) => a.severidad === 'CRITICA' || a.severidad === 'ALTA');
     if (opciones.notificarPM && opciones.notificarSoloConAcciones && sinAcciones && !hayAlertasGraves) {
@@ -151,6 +152,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
         notificacionResultado = await enviarSolicitudAprobacion(dictamenAprobador, config, metricas);
         logEtapa('NOTIFICACION', `Correo de aprobación interactivo enviado exitosamente (Acciones: ${notificacionResultado.registeredActionsCount}).`);
       } catch (mailError) {
+        notificacionError = mailError.message;
         logEtapa('NOTIFICACION_WARN', `No se pudo enviar el correo: ${mailError.message}`);
       }
     }
@@ -173,6 +175,7 @@ export async function ejecutarFlujoSeguimiento(opciones = {}) {
       aprobadorVerdict: dictamenAprobador,
       accionesDescartadas: descartadas,
       notificacion: notificacionResultado,
+      notificacionError,
     };
 
   } catch (error) {

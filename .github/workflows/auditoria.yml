@@ -1,0 +1,72 @@
+name: Auditoría programada
+
+# Ecuador (America/Guayaquil) es UTC-5 todo el año:
+#   13:00 UTC = 08:00 Ecuador (auditoría diaria, lunes a viernes)
+#   22:00 UTC = 17:00 Ecuador (reporte semanal, viernes)
+# Nota: GitHub puede retrasar los cron unos minutos en horas de alta demanda.
+on:
+  schedule:
+    - cron: '0 13 * * 1-5'
+    - cron: '0 22 * * 5'
+  workflow_dispatch:
+    inputs:
+      tarea:
+        description: 'Tarea a ejecutar'
+        required: true
+        default: diaria
+        type: choice
+        options: [diaria, semanal]
+
+permissions:
+  contents: read
+
+# Nunca dos auditorías a la vez (evita correos duplicados y gasto doble de cuota).
+concurrency:
+  group: auditoria-agente
+  cancel-in-progress: false
+
+jobs:
+  ejecutar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Determinar tarea
+        id: tarea
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "nombre=${{ inputs.tarea }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 22 * * 5" ]; then
+            echo "nombre=semanal" >> "$GITHUB_OUTPUT"
+          else
+            echo "nombre=diaria" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ejecutar ${{ steps.tarea.outputs.nombre }}
+        run: node scripts/tarea-programada.js ${{ steps.tarea.outputs.nombre }}
+        env:
+          NODE_ENV: production
+          PROJECT_CONFIG_JSON: ${{ secrets.PROJECT_CONFIG_JSON }}
+          APP_BASE_URL: ${{ vars.APP_BASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_FALLBACK_MODELS: ${{ vars.GEMINI_FALLBACK_MODELS }}
+          TRELLO_API_KEY: ${{ secrets.TRELLO_API_KEY }}
+          TRELLO_TOKEN: ${{ secrets.TRELLO_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_REPO_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}

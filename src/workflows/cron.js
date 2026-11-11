@@ -26,6 +26,10 @@ export async function ejecutarAuditoriaDiaria() {
       notificarPM: true,
       notificarSoloConAcciones: true,
     });
+    if (resultado.notificacionError) {
+      console.error(`[Cron Diario] ⚠️ La auditoría terminó pero el correo falló: ${resultado.notificacionError}`);
+      return null;
+    }
     console.log(`[Cron Diario] ✅ Auditoría completada. Acciones propuestas: ${resultado.aprobadorVerdict.actionItems.length}`);
     return resultado;
   } catch (error) {
