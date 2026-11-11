@@ -9,6 +9,7 @@ import {
   ESTADOS,
   obtenerAccion,
   tokenValido,
+  accionExpirada,
   actualizarEstadoAccion,
   listarAcciones,
 } from './storage/accionesStore.js';
@@ -25,10 +26,44 @@ const LOG_FILE_PATH = process.env.HISTORIAL_LOG_PATH || path.resolve(__dirname, 
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const ES_PRODUCCION = process.env.NODE_ENV === 'production';
+
+/**
+ * En producción el servidor se niega a arrancar con una configuración insegura.
+ * @returns {string[]} problemas encontrados
+ */
+export const validarEntornoProduccion = (env = process.env) => {
+  const problemas = [];
+  if (!env.ADMIN_TOKEN || env.ADMIN_TOKEN.length < 32) {
+    problemas.push('ADMIN_TOKEN debe estar definido y tener al menos 32 caracteres.');
+  }
+  if (!/^https:\/\//.test(env.APP_BASE_URL || '')) {
+    problemas.push('APP_BASE_URL debe ser una URL https:// pública.');
+  }
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    problemas.push('SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY son obligatorias (el disco del servidor no es persistente).');
+  }
+  return problemas;
+};
 
 // Middlewares
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '100kb' }));
+app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+
+// Cabeceras de seguridad básicas
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer', // evita filtrar el token de la URL a otros sitios
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    ...(ES_PRODUCCION ? { 'Strict-Transport-Security': 'max-age=31536000; includeSubDomains' } : {}),
+  });
+  next();
+});
 
 // Request logging middleware (sin query string para no registrar tokens en consola)
 app.use((req, res, next) => {
@@ -37,37 +72,52 @@ app.use((req, res, next) => {
 });
 
 /**
- * Protege endpoints administrativos con ADMIN_TOKEN (header "x-admin-token" o query "?adminToken=").
- * Si ADMIN_TOKEN no está configurado, se permite el acceso (modo desarrollo) con advertencia.
+ * Protege endpoints administrativos con ADMIN_TOKEN (solo header "x-admin-token",
+ * nunca en la URL, para que no quede en logs ni historial del navegador).
+ * Si ADMIN_TOKEN no está configurado (solo posible fuera de producción), se permite el acceso.
  */
 const requireAdmin = (req, res, next) => {
   const esperado = process.env.ADMIN_TOKEN;
   if (!esperado) return next();
 
-  const recibido = String(req.get('x-admin-token') || req.query.adminToken || '');
-  const a = Buffer.from(esperado);
-  const b = Buffer.from(recibido);
-  if (a.length === b.length && crypto.timingSafeEqual(a, b)) return next();
+  const a = crypto.createHash('sha256').update(esperado).digest();
+  const b = crypto.createHash('sha256').update(String(req.get('x-admin-token') || '')).digest();
+  if (crypto.timingSafeEqual(a, b)) return next();
 
   return res.status(401).json({ error: 'No autorizado. Envía el header x-admin-token.' });
 };
 
-// Health check endpoint
+// Raíz: confirma que el servicio está activo, sin exponer información interna
+app.get('/', (req, res) => {
+  res.status(200).json({
+    servicio: 'Smart Project Agent',
+    estado: 'activo',
+    descripcion: 'Servidor de aprobaciones. Los enlaces de los correos de auditoría apuntan a /webhook/decision.',
+  });
+});
+
+app.get('/robots.txt', (req, res) => res.type('text/plain').send('User-agent: *\nDisallow: /\n'));
+
+// Health check endpoint (no consulta la base de datos para ser barato)
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'ok',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
-    pendingActionsCount: listarAcciones({ status: ESTADOS.PENDING }).length,
   });
 });
 
 /**
  * Consulta de acciones registradas (sin tokens). Filtro opcional: ?status=PENDING
  */
-app.get('/api/pending-actions', requireAdmin, (req, res) => {
-  const actions = listarAcciones({ status: req.query.status });
-  res.status(200).json({ total: actions.length, actions });
+app.get('/api/pending-actions', requireAdmin, async (req, res) => {
+  try {
+    const actions = await listarAcciones({ status: req.query.status });
+    res.status(200).json({ total: actions.length, actions });
+  } catch (error) {
+    console.error('[API /api/pending-actions] Error:', error.message);
+    res.status(500).json({ error: 'No se pudo consultar el almacén de acciones.' });
+  }
 });
 
 /**
@@ -240,8 +290,8 @@ const ESTADO_TEXTO = {
 /**
  * Valida actionId + token + decision. Retorna { action, decision } o envía la respuesta de error.
  */
-const resolverSolicitudDecision = (params, res) => {
-  const { actionId, token, decision } = params;
+const resolverSolicitudDecision = async (params, res) => {
+  const { actionId, token, decision } = params || {};
   const decisionNormalized = String(decision || '').toLowerCase();
 
   if (!actionId || !token || !['approve', 'reject'].includes(decisionNormalized)) {
@@ -254,9 +304,9 @@ const resolverSolicitudDecision = (params, res) => {
     return null;
   }
 
-  const action = obtenerAccion(actionId);
+  const action = await obtenerAccion(String(actionId));
   if (!action || !tokenValido(action, String(token))) {
-    console.warn(`[Webhook Decision] ⚠️ Acción "${actionId}" no encontrada o token inválido.`);
+    console.warn('[Webhook Decision] ⚠️ Acción no encontrada o token inválido.');
     res.status(404).send(renderHtmlResponse({
       title: 'Acción No Encontrada',
       statusType: 'warning',
@@ -266,7 +316,36 @@ const resolverSolicitudDecision = (params, res) => {
     return null;
   }
 
+  if (action.status === ESTADOS.PENDING && accionExpirada(action)) {
+    res.status(410).send(renderHtmlResponse({
+      title: 'Enlace Caducado',
+      statusType: 'warning',
+      headline: 'Esta propuesta ya caducó',
+      message: 'El enlace superó su tiempo de vigencia. La próxima auditoría generará propuestas actualizadas.',
+      actionCode: action.itemCode,
+      details: { cardName: action.cardName, action: action.recommendedAction },
+    }));
+    return null;
+  }
+
   return { action, decision: decisionNormalized };
+};
+
+/** Envuelve un handler async para responder con una página de error en vez de colgar la petición. */
+const manejarErrores = (handler) => async (req, res) => {
+  try {
+    await handler(req, res);
+  } catch (error) {
+    console.error(`[${req.method} ${req.path}] Error:`, error.message);
+    if (!res.headersSent) {
+      res.status(500).send(renderHtmlResponse({
+        title: 'Error Interno',
+        statusType: 'warning',
+        headline: 'No se pudo procesar la solicitud',
+        message: 'Ocurrió un error temporal. Intenta nuevamente en unos minutos desde el mismo enlace.',
+      }));
+    }
+  }
 };
 
 const detallesDeAccion = (action, extra = {}) => ({
@@ -295,8 +374,8 @@ const responderAccionYaResuelta = (action, res) => {
  * No modifica nada, así los escáneres de enlaces de los clientes de correo no pueden aprobar acciones.
  * URL: GET /webhook/decision?actionId=...&token=...&decision=(approve|reject)
  */
-app.get('/webhook/decision', (req, res) => {
-  const resuelta = resolverSolicitudDecision(req.query, res);
+app.get('/webhook/decision', manejarErrores(async (req, res) => {
+  const resuelta = await resolverSolicitudDecision(req.query, res);
   if (!resuelta) return;
   const { action, decision } = resuelta;
 
@@ -326,13 +405,13 @@ app.get('/webhook/decision', (req, res) => {
     details: detallesDeAccion(action, { trelloResult: action.executionResult?.error }),
     formHtml,
   }));
-});
+}));
 
 /**
  * Paso 2 (POST): registra la decisión del Gestor y, si aprueba, aplica el cambio en Trello.
  */
-app.post('/webhook/decision', async (req, res) => {
-  const resuelta = resolverSolicitudDecision(req.body, res);
+app.post('/webhook/decision', manejarErrores(async (req, res) => {
+  const resuelta = await resolverSolicitudDecision(req.body, res);
   if (!resuelta) return;
   const { action, decision } = resuelta;
 
@@ -346,7 +425,7 @@ app.post('/webhook/decision', async (req, res) => {
     `Tarjeta: "${action.cardName}" (${action.cardId})`;
 
   if (decision === 'reject') {
-    actualizarEstadoAccion(action.actionId, ESTADOS.REJECTED);
+    await actualizarEstadoAccion(action.actionId, ESTADOS.REJECTED);
     registrarEnHistorial(`[DECISION: RECHAZADA] ${resumen} | Desestimada por el PM.`);
     console.log(`[HUMAN-IN-THE-LOOP] ❌ Acción ${action.itemCode} rechazada por el Gestor. Trello sin cambios.`);
 
@@ -371,7 +450,7 @@ app.post('/webhook/decision', async (req, res) => {
   };
 
   if (!resultado.success) {
-    actualizarEstadoAccion(action.actionId, ESTADOS.FAILED, executionResult);
+    await actualizarEstadoAccion(action.actionId, ESTADOS.FAILED, executionResult);
     registrarEnHistorial(`[DECISION: APROBADA - ERROR TRELLO] ${resumen} | Params: ${JSON.stringify(params)} | Error: ${resultado.error}`);
 
     return res.status(502).send(renderHtmlResponse({
@@ -384,7 +463,7 @@ app.post('/webhook/decision', async (req, res) => {
     }));
   }
 
-  actualizarEstadoAccion(action.actionId, ESTADOS.APPROVED, executionResult);
+  await actualizarEstadoAccion(action.actionId, ESTADOS.APPROVED, executionResult);
   registrarEnHistorial(
     `[DECISION: APROBADA${executionResult.dryRun ? ' - DRY RUN' : ''}] ${resumen} | ` +
     `Accion: "${action.recommendedAction}" | Params: ${JSON.stringify(params)}`
@@ -400,7 +479,7 @@ app.post('/webhook/decision', async (req, res) => {
     actionCode: action.itemCode,
     details: detallesDeAccion(action, { trelloResult: executionResult.dryRun ? 'Simulado' : 'Actualizada' }),
   }));
-});
+}));
 
 /**
  * Generic Webhook Endpoint for Repository Updates
@@ -448,6 +527,15 @@ app.post('/webhook/repo-update', async (req, res) => {
 
 // Start server only when executed directly
 if (process.env.NODE_ENV !== 'test') {
+  if (ES_PRODUCCION) {
+    const problemas = validarEntornoProduccion();
+    if (problemas.length > 0) {
+      console.error('[Server] ❌ Configuración insegura para producción. El servidor no se iniciará:');
+      problemas.forEach((p) => console.error(`  - ${p}`));
+      process.exit(1);
+    }
+  }
+
   app.listen(PORT, () => {
     console.log(`[Server] Smart Project Agent running on port ${PORT}`);
     console.log(`[Server] Test agent endpoint: GET http://localhost:${PORT}/api/test-agent`);
