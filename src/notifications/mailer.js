@@ -40,7 +40,51 @@ export const createTransporter = () => {
  * @param {string} params.baseUrl
  * @returns {string} HTML completo
  */
-const generarHtmlAprobacion = ({ projectName, overallRisk, executiveSummary, actionItemsConIds, baseUrl }) => {
+const COLOR_SEVERIDAD = { CRITICA: '#dc2626', ALTA: '#ea580c', MEDIA: '#d97706', INFO: '#2563eb' };
+
+/**
+ * Panel con el estado del proyecto calculado por el sistema (no por la IA).
+ * @param {Object|null} metricas
+ * @returns {string} HTML
+ */
+const generarPanelEstado = (metricas) => {
+  if (!metricas) return '';
+
+  const kpi = (valor, etiqueta) => `
+    <td style="text-align: center; padding: 8px;">
+      <div style="font-size: 22px; font-weight: bold; color: #0f172a;">${escapeHtml(valor)}</div>
+      <div style="font-size: 11px; color: #64748b; text-transform: uppercase;">${escapeHtml(etiqueta)}</div>
+    </td>`;
+
+  const fases = (metricas.fases || []).map((f) => `
+    <tr>
+      <td style="padding: 4px 0; font-size: 12px; color: #334155;">${escapeHtml(f.nombre)}</td>
+      <td style="padding: 4px 0 4px 12px; font-size: 12px; color: #64748b; white-space: nowrap; text-align: right;">${f.completadas}/${f.total} (${f.avance}%)</td>
+    </tr>`).join('');
+
+  const alertas = (metricas.alertas || []).map((a) => `
+    <li style="margin-bottom: 6px;">
+      <span style="background-color: ${COLOR_SEVERIDAD[a.severidad] || '#64748b'}; color: #fff; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px;">${escapeHtml(a.severidad)}</span>
+      ${escapeHtml(a.mensaje)}
+    </li>`).join('');
+
+  return `
+    <div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; margin-bottom: 24px;">
+      <table role="presentation" width="100%" style="border-collapse: collapse; margin-bottom: 12px;"><tr>
+        ${kpi(`${metricas.avanceGlobal}%`, 'Avance global')}
+        ${kpi(metricas.entrega ? metricas.entrega.diasRestantes : '—', 'Días para la entrega')}
+        ${kpi(`${metricas.tareasPendientes.length}`, 'Tareas pendientes')}
+      </tr></table>
+      <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">Fase actual: <strong style="color: #0f172a;">${escapeHtml(metricas.faseActual)}</strong>${metricas.entrega ? ` · Entrega: <strong style="color: #0f172a;">${escapeHtml(metricas.entrega.fecha)}</strong>` : ''}</div>
+      <table role="presentation" width="100%" style="border-collapse: collapse; margin-bottom: 12px;">${fases}</table>
+      ${alertas ? `
+      <div style="font-size: 12px; font-weight: bold; color: #64748b; text-transform: uppercase; margin-bottom: 6px;">Alertas detectadas por el sistema</div>
+      <ul style="padding-left: 18px; margin: 0; font-size: 13px; color: #334155; line-height: 1.5;">${alertas}</ul>` : ''}
+    </div>`;
+};
+
+const generarHtmlAprobacion = ({ projectName, overallRisk, executiveSummary, actionItemsConIds, baseUrl, metricas = null }) => {
+  const nombrePorMiembro = new Map((metricas?.equipo || []).map((m) => [m.trelloMemberId, m.name]));
   const getBadgeColor = (risk) => {
     switch (risk?.toUpperCase()) {
       case 'CRITICO': return '#dc2626';
@@ -72,6 +116,16 @@ const generarHtmlAprobacion = ({ projectName, overallRisk, executiveSummary, act
       technicalJustification: escapeHtml(rawItem.technicalJustification),
     };
 
+    const params = rawItem.trelloExecutionParams || {};
+    const miembros = (Array.isArray(params.idMembers) ? params.idMembers : String(params.idMembers || '').split(','))
+      .filter(Boolean)
+      .map((id) => nombrePorMiembro.get(id) || id);
+    const cambiosHtml = [
+      params.due ? `🗓️ <strong>Nueva fecha límite:</strong> ${escapeHtml(new Date(params.due).toLocaleString('es'))}` : '',
+      miembros.length ? `👤 <strong>Responsables:</strong> ${escapeHtml(miembros.join(', '))}` : '',
+      params.comment ? `💬 <strong>Comentario en la tarjeta:</strong><br><span style="white-space: pre-wrap; font-style: italic;">${escapeHtml(params.comment)}</span>` : '',
+    ].filter(Boolean).join('<br>');
+
     return `
       <div style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 24px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.04);">
         <!-- Encabezado de la Tarjeta -->
@@ -101,10 +155,11 @@ const generarHtmlAprobacion = ({ projectName, overallRisk, executiveSummary, act
             <p style="margin: 4px 0 0 0; color: #475569; font-size: 13px; line-height: 1.5; font-style: italic;">"${item.technicalJustification}"</p>
           </div>
 
-          <!-- Parámetros Trello a modificar -->
-          ${item.trelloExecutionParams?.due ? `
-          <div style="margin-bottom: 20px; font-size: 12px; color: #475569; background-color: #f1f5f9; padding: 8px 12px; border-radius: 6px;">
-            🗓️ <strong>Nueva Fecha Límite propuesta:</strong> ${new Date(item.trelloExecutionParams.due).toLocaleString()}
+          <!-- Cambios exactos que se aplicarán en Trello -->
+          ${cambiosHtml ? `
+          <div style="margin-bottom: 20px; font-size: 12px; color: #475569; background-color: #f1f5f9; padding: 10px 12px; border-radius: 6px; line-height: 1.6;">
+            <strong style="text-transform: uppercase; color: #64748b;">Al aprobar se aplicará en Trello:</strong><br>
+            ${cambiosHtml}
           </div>` : ''}
 
           <!-- Botones de Acción (Human-in-the-Loop) -->
@@ -157,6 +212,8 @@ const generarHtmlAprobacion = ({ projectName, overallRisk, executiveSummary, act
           </div>
         </div>
 
+        ${generarPanelEstado(metricas)}
+
         <!-- Política de Gobernanza -->
         <div style="border: 1px dashed #cbd5e1; background-color: #fafafa; border-radius: 8px; padding: 12px 16px; margin-bottom: 28px; font-size: 12px; color: #475569; line-height: 1.5;">
           🔒 <strong>Regla de Gobernanza Activa:</strong> Ningún cambio ha sido aplicado aún en Trello. Por favor, evalúa cada propuesta individualmente y haz clic en el botón correspondiente para autorizar o desestimar la ejecución.
@@ -190,7 +247,7 @@ const generarHtmlAprobacion = ({ projectName, overallRisk, executiveSummary, act
  * @param {Object} [configProyecto] - Configuración del proyecto.
  * @returns {Promise<Object>} Resultado del envío y lista de acciones registradas.
  */
-export async function enviarSolicitudAprobacion(datosDictamen, configProyecto = null) {
+export async function enviarSolicitudAprobacion(datosDictamen, configProyecto = null, metricas = null) {
   try {
     if (!datosDictamen) {
       throw new Error('[Mailer] Se requiere el objeto de datos del dictamen del Agente Aprobador.');
@@ -234,7 +291,8 @@ export async function enviarSolicitudAprobacion(datosDictamen, configProyecto = 
     const htmlEmail = generarHtmlAprobacion({
       projectName,
       overallRisk: datosDictamen.overallRisk || 'MEDIO',
-      executiveSummary: datosDictamen.summaryForPM || datosDictamen.executiveSummary || 'Auditoría de planificación completada.',
+      executiveSummary: datosDictamen.executiveSummary || 'Auditoría de planificación completada.',
+      metricas,
       actionItemsConIds,
       baseUrl,
     });
