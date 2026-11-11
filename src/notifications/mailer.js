@@ -1,69 +1,18 @@
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 import { loadProjectConfig } from '../config/index.js';
+import { registrarAccionPendiente } from '../storage/accionesStore.js';
+import { escapeHtml } from '../utils/html.js';
 
 dotenv.config();
 
 /**
- * Almacén en memoria para registrar y persistir temporalmente las acciones
- * generadas por el Agente Aprobador a la espera de la decisión del Gestor.
- * Estructura: Map<actionId, ActionRecord>
+ * URL pública del servidor, usada en los botones del correo.
+ * Debe ser accesible desde donde el Gestor abra el correo (no localhost en producción).
+ * @returns {string}
  */
-export const pendingActionsStore = new Map();
-
-/**
- * Registra una acción en el almacén de acciones pendientes.
- * @param {Object} actionData
- * @returns {string} actionId
- */
-export const registrarAccionPendiente = (actionData) => {
-  const actionId = actionData.actionId || actionData.itemCode || `ACT-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-  const record = {
-    actionId,
-    itemCode: actionData.itemCode || actionId,
-    projectName: actionData.projectName || 'Proyecto Genérico',
-    cardId: actionData.cardId || actionData.trelloExecutionParams?.idCard,
-    cardName: actionData.cardName || 'Tarea Sin Nombre',
-    detectedProblem: actionData.detectedProblem || 'Sin detalle del problema',
-    recommendedAction: actionData.recommendedAction || 'Sin detalle de acción',
-    technicalJustification: actionData.technicalJustification || 'No especificada',
-    impactLevel: actionData.impactLevel || 'MEDIO',
-    trelloExecutionParams: actionData.trelloExecutionParams || { idCard: actionData.cardId },
-    status: 'PENDING', // 'PENDING' | 'APPROVED' | 'REJECTED'
-    createdAt: new Date().toISOString(),
-    resolvedAt: null,
-  };
-
-  pendingActionsStore.set(actionId, record);
-  return actionId;
-};
-
-/**
- * Obtiene una acción pendiente del almacén.
- * @param {string} actionId 
- * @returns {Object|null}
- */
-export const obtenerAccionPendiente = (actionId) => {
-  return pendingActionsStore.get(actionId) || null;
-};
-
-/**
- * Actualiza el estado de una acción pendiente.
- * @param {string} actionId 
- * @param {'APPROVED'|'REJECTED'} status 
- * @returns {Object}
- */
-export const actualizarEstadoAccion = (actionId, status) => {
-  const action = pendingActionsStore.get(actionId);
-  if (!action) {
-    throw new Error(`Acción con ID "${actionId}" no encontrada en el almacén.`);
-  }
-
-  action.status = status;
-  action.resolvedAt = new Date().toISOString();
-  pendingActionsStore.set(actionId, action);
-  return action;
-};
+export const obtenerBaseUrl = () =>
+  (process.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/+$/, '');
 
 /**
  * Crea y retorna el transportador de Nodemailer configurado con variables de entorno.
@@ -102,11 +51,26 @@ const generarHtmlAprobacion = ({ projectName, overallRisk, executiveSummary, act
   };
 
   const riskColor = getBadgeColor(overallRisk);
+  projectName = escapeHtml(projectName);
+  overallRisk = escapeHtml(overallRisk);
+  executiveSummary = escapeHtml(executiveSummary);
 
-  const actionCardsHtml = actionItemsConIds.map((item) => {
-    const approveUrl = `${baseUrl}/webhook/decision?actionId=${encodeURIComponent(item.actionId)}&decision=approve`;
-    const rejectUrl = `${baseUrl}/webhook/decision?actionId=${encodeURIComponent(item.actionId)}&decision=reject`;
-    const impactColor = getBadgeColor(item.impactLevel);
+  const actionCardsHtml = actionItemsConIds.map((rawItem) => {
+    const enlace = (decision) =>
+      `${baseUrl}/webhook/decision?actionId=${encodeURIComponent(rawItem.actionId)}` +
+      `&token=${encodeURIComponent(rawItem.token)}&decision=${decision}`;
+    const approveUrl = escapeHtml(enlace('approve'));
+    const rejectUrl = escapeHtml(enlace('reject'));
+    const impactColor = getBadgeColor(rawItem.impactLevel);
+    const item = {
+      ...rawItem,
+      itemCode: escapeHtml(rawItem.itemCode),
+      cardName: escapeHtml(rawItem.cardName),
+      impactLevel: escapeHtml(rawItem.impactLevel),
+      detectedProblem: escapeHtml(rawItem.detectedProblem),
+      recommendedAction: escapeHtml(rawItem.recommendedAction),
+      technicalJustification: escapeHtml(rawItem.technicalJustification),
+    };
 
     return `
       <div style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 24px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.04);">
@@ -246,23 +210,25 @@ export async function enviarSolicitudAprobacion(datosDictamen, configProyecto = 
     }
 
     const projectName = config.projectName || datosDictamen.projectMetadata?.projectName || 'Proyecto Genérico';
-    const baseUrl = process.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const baseUrl = obtenerBaseUrl();
+    if (/localhost|127\.0\.0\.1/.test(baseUrl)) {
+      console.warn(
+        `[Mailer] ⚠️ APP_BASE_URL apunta a ${baseUrl}. Los botones del correo solo funcionarán ` +
+        'en este mismo equipo. Configura APP_BASE_URL con la URL pública del servidor.'
+      );
+    }
 
-    // 1. Registrar cada acción en el almacén en memoria con su actionId
+    // 1. Registrar cada acción en el almacén persistente (ID único + token secreto)
     const actionItemsRaw = datosDictamen.actionItems || [];
     const actionItemsConIds = actionItemsRaw.map((item, idx) => {
-      const actionId = registrarAccionPendiente({
-        ...item,
-        itemCode: item.itemCode || `ACC-${idx + 1}`,
-        projectName,
-      });
-
-      return {
-        ...item,
-        actionId,
-        itemCode: item.itemCode || `ACC-${idx + 1}`,
-      };
+      const itemCode = item.itemCode || `ACC-${idx + 1}`;
+      const record = registrarAccionPendiente({ ...item, itemCode, projectName });
+      return { ...item, itemCode, actionId: record.actionId, token: record.token };
     });
+
+    if (actionItemsConIds.length === 0) {
+      console.log('[Mailer] ℹ️ El dictamen no contiene acciones que requieran aprobación. Se envía solo el diagnóstico.');
+    }
 
     // 2. Construir plantilla HTML interactiva
     const htmlEmail = generarHtmlAprobacion({
@@ -336,8 +302,5 @@ export default {
   createTransporter,
   sendProjectAlert,
   enviarSolicitudAprobacion,
-  pendingActionsStore,
-  registrarAccionPendiente,
-  obtenerAccionPendiente,
-  actualizarEstadoAccion,
+  obtenerBaseUrl,
 };
