@@ -26,7 +26,8 @@ const leerEntero = (valor, porDefecto) => {
  */
 export const obtenerModelosConfigurados = () => {
   const principal = (process.env.GEMINI_MODEL || '').trim() || MODELO_POR_DEFECTO;
-  const respaldos = (process.env.GEMINI_FALLBACK_MODELS ?? RESPALDOS_POR_DEFECTO)
+  // `||` y no `??`: en GitHub Actions una variable no definida llega como "" y debe usar la lista por defecto.
+  const respaldos = (process.env.GEMINI_FALLBACK_MODELS?.trim() || RESPALDOS_POR_DEFECTO)
     .split(',')
     .map((m) => m.trim())
     .filter(Boolean);
