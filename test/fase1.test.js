@@ -82,7 +82,7 @@ test('validación: acepta acción correcta y usa el nombre real de la tarjeta', 
   const { dictamen, descartadas } = validarAccionesContraTrello(
     { actionItems: [accion({ idCard: 'card-1', due: '2030-02-01T00:00:00Z', idMembers: ['mem-1'] })] },
     snapshot,
-    ahora,
+    { ahora },
   );
   assert.equal(descartadas.length, 0);
   assert.equal(dictamen.actionItems[0].cardName, 'Reservar salón');
@@ -101,7 +101,7 @@ test('validación: descarta tarjeta inventada, fecha pasada, lista y miembro ine
       ],
     },
     snapshot,
-    ahora,
+    { ahora },
   );
   assert.equal(dictamen.actionItems.length, 0);
   assert.equal(descartadas.length, 5);
